@@ -40,22 +40,31 @@ class PolymarketClient:
                     resp.raise_for_status()
                 if resp.status_code == 429:
                     wait = 2 ** attempt * 2
-                    logger.warning("Rate limited. Sleeping %ss (attempt %d)", wait, attempt + 1)
+                    short_url = url if len(url) <= 60 else url[:57] + "…"
+                    logger.warning("Rate limited on %s — sleeping %ss", short_url, wait)
                     time.sleep(wait)
                     continue
                 if resp.status_code >= 500:
                     wait = 2 ** attempt
-                    logger.warning("Server error %d. Retrying in %ss", resp.status_code, wait)
+                    short_url = url if len(url) <= 60 else url[:57] + "…"
+                    logger.warning("Server error %d on %s — retrying in %ss", resp.status_code, short_url, wait)
                     time.sleep(wait)
                     continue
                 resp.raise_for_status()
                 return resp.json()
             except requests.RequestException as exc:
                 last_exc = exc
-                logger.warning("Request failed (%s). Attempt %d/%d", exc, attempt + 1, self._max_retries)
+                # Truncate the URL in the message — long query strings are unreadable
+                short_url = url if len(url) <= 80 else url[:77] + "…"
+                logger.warning(
+                    "Request failed (attempt %d/%d): %s — %s",
+                    attempt + 1, self._max_retries,
+                    short_url, type(exc).__name__,
+                )
                 time.sleep(2 ** attempt)
 
-        raise RuntimeError(f"Failed after {self._max_retries} attempts: {last_exc}")
+        short_url = url if len(url) <= 80 else url[:77] + "…"
+        raise RuntimeError(f"Failed after {self._max_retries} attempts on {short_url}: {type(last_exc).__name__}")
 
     # --- Convenience wrappers ---
 
@@ -228,18 +237,26 @@ class PolymarketClient:
                 "winner_token_id":  winner_token_id,
             }
 
-        # Batch fetch — keep chunks small (≤5) to avoid 403s on long URLs
-        chunk_size = 5
-        for i in range(0, len(condition_ids), chunk_size):
+        # Batch fetch — keep chunks small (≤3) to avoid 403s on long URLs.
+        # Yields after each chunk so callers can flush to DB incrementally.
+        chunk_size = 3
+        total      = len(condition_ids)
+        for i in range(0, total, chunk_size):
             chunk = condition_ids[i : i + chunk_size]
             try:
                 raw = self.markets(chunk)
                 for m in (raw if isinstance(raw, list) else [raw]):
                     _parse_market(m)
             except Exception as exc:
-                logger.warning("market_statuses batch failed: %s", exc)
-
-        return statuses
+                short_ids = ", ".join(c[:10] + "…" for c in chunk)
+                logger.warning(
+                    "market_statuses batch failed [%d–%d/%d] (%s): %s",
+                    i + 1, min(i + chunk_size, total), total,
+                    short_ids,
+                    type(exc).__name__,
+                )
+            yield dict(statuses)   # snapshot after each chunk
+            statuses.clear()
 
     def token_prices(self, token_ids: list[str]) -> dict[str, float]:
         """Return {token_id: current_price} using the CLOB midpoint API.

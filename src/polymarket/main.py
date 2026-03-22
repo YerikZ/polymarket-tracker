@@ -711,66 +711,85 @@ def cmd_pnl(args: argparse.Namespace, client: PolymarketClient, storage: Storage
         and (not p.get("market_title") or p.get("market_title", "").startswith("(resolving"))
     })
 
-    # Only re-query markets that aren't already definitively resolved in the DB.
-    # Won/lost positions won't change — skip them to cut API calls significantly.
-    settled_statuses = {"won", "lost"}
+    # Skip markets already definitively settled in DB — won/lost/closed won't change.
+    settled_statuses = {"won", "lost", "closed"}
     settled_cids = {
         p["condition_id"] for p in positions
         if p.get("position_status") in settled_statuses and p.get("condition_id")
     }
     pending_condition_ids = [c for c in condition_ids if c not in settled_cids]
 
-    # ── Step 1: fetch market statuses and titles FIRST so we know which are resolved ──
-    with console.status(
-        f"Fetching market status for {len(pending_condition_ids)} markets"
-        + (f" (skipping {len(settled_cids)} already resolved)…" if settled_cids else "…")
-    ):
-        mkt_statuses = client.market_statuses(pending_condition_ids)
-        title_map    = client.market_questions(
+    # Build a reverse index: condition_id → all matching positions (for fast in-memory update)
+    pos_by_cid: dict[str, list[dict]] = {}
+    for p in positions:
+        cid = p.get("condition_id", "")
+        if cid:
+            pos_by_cid.setdefault(cid, []).append(p)
+
+    # ── Step 1: resolve titles for markets with missing/placeholder titles ─────
+    with console.status(f"Fetching titles for {len(unresolved_tids)} unresolved markets…"):
+        title_map = client.market_questions(
             condition_ids=condition_ids or None,
             token_ids=unresolved_tids or None,
         )
-
-    # Persist resolved titles
     if storage.update_paper_titles(title_map):
         positions = storage.get_paper_positions()
+        # Rebuild reverse index after title refresh
+        pos_by_cid = {}
+        for p in positions:
+            cid = p.get("condition_id", "")
+            if cid:
+                pos_by_cid.setdefault(cid, []).append(p)
 
-    # ── Step 2: update position_status in memory (and DB) from fresh API data ──
-    status_updates = []
-    for pos in positions:
-        cid    = pos.get("condition_id", "")
-        tid    = pos.get("token_id", "")
-        status = mkt_statuses.get(cid, {})
+    # ── Step 2: fetch market statuses in small chunks, flush DB after each ────
+    skipped_n  = len(settled_cids)
+    pending_n  = len(pending_condition_ids)
+    done       = 0
 
-        mkt_closed      = status.get("closed", False)
-        resolved        = status.get("resolved", False)
-        winner_token    = status.get("winner_token_id", "")
-        winner_outcome  = status.get("winner_outcome", "")
+    if pending_n:
+        console.print(
+            f"  Checking status: [cyan]{pending_n}[/cyan] markets to refresh"
+            + (f", [dim]{skipped_n} already settled — skipped[/dim]" if skipped_n else "")
+        )
 
-        if resolved and winner_token:
-            pos_status = "won" if tid == winner_token else "lost"
-        elif mkt_closed:
-            pos_status = "closed"
-        else:
-            pos_status = "open"
+    for chunk_statuses in client.market_statuses(pending_condition_ids):
+        status_updates = []
+        for cid, status in chunk_statuses.items():
+            mkt_closed     = status.get("closed", False)
+            resolved       = status.get("resolved", False)
+            winner_token   = status.get("winner_token_id", "")
+            winner_outcome = status.get("winner_outcome", "")
 
-        # Only write if something changed
-        if (pos.get("position_status", "open") != pos_status
-                or pos.get("resolution_outcome", "") != winner_outcome
-                or bool(pos.get("market_closed", False)) != mkt_closed):
-            status_updates.append({
-                "id":                 pos["id"],
-                "position_status":    pos_status,
-                "resolution_outcome": winner_outcome,
-                "market_closed":      mkt_closed,
-            })
-        # Always update in-memory so price fetch below sees fresh status
-        pos["position_status"]    = pos_status
-        pos["resolution_outcome"] = winner_outcome
-        pos["market_closed"]      = mkt_closed
+            for pos in pos_by_cid.get(cid, []):
+                tid = pos.get("token_id", "")
+                if resolved and winner_token:
+                    pos_status = "won" if tid == winner_token else "lost"
+                elif mkt_closed:
+                    pos_status = "closed"
+                else:
+                    pos_status = "open"
 
-    if status_updates:
-        storage.update_position_statuses(status_updates)
+                if (pos.get("position_status", "open") != pos_status
+                        or pos.get("resolution_outcome", "") != winner_outcome
+                        or bool(pos.get("market_closed", False)) != mkt_closed):
+                    status_updates.append({
+                        "id":                 pos["id"],
+                        "position_status":    pos_status,
+                        "resolution_outcome": winner_outcome,
+                        "market_closed":      mkt_closed,
+                    })
+                # Always update in-memory
+                pos["position_status"]    = pos_status
+                pos["resolution_outcome"] = winner_outcome
+                pos["market_closed"]      = mkt_closed
+
+        if status_updates:
+            storage.update_position_statuses(status_updates)
+            done += len(chunk_statuses)
+            console.print(
+                f"  [dim]  └─ {done}/{pending_n} checked"
+                f", {len(status_updates)} updated[/dim]"
+            )
 
     # ── Step 3: fetch CLOB prices only for open positions ─────────────────────
     # Resolved tokens (won/lost/closed) are no longer on the order book → 404.
