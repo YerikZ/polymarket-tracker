@@ -187,11 +187,11 @@ class Storage:
                     INSERT INTO paper_positions
                         (condition_id, token_id, market_title, outcome,
                          entry_price, shares, spend_usdc, opened_at,
-                         wallet_address, username, wallet_rank)
+                         wallet_address, username, wallet_rank, is_dry_run)
                     VALUES
                         (%(condition_id)s, %(token_id)s, %(market_title)s, %(outcome)s,
                          %(entry_price)s, %(shares)s, %(spend_usdc)s, %(opened_at)s,
-                         %(wallet_address)s, %(username)s, %(wallet_rank)s)
+                         %(wallet_address)s, %(username)s, %(wallet_rank)s, %(is_dry_run)s)
                     """,
                     pos,
                 )

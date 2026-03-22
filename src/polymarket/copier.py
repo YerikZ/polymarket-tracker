@@ -173,6 +173,7 @@ class CopyTrader:
                 "wallet_address": signal.wallet_address,
                 "username": signal.username,
                 "wallet_rank": signal.wallet_rank,
+                "is_dry_run": True,
             })
             # Bug fix: track dry-run spend so the daily limit is enforced for simulated trades too
             self._storage.record_daily_spend(date.today().isoformat(), spend)
@@ -261,6 +262,21 @@ class CopyTrader:
                     order_id, shares, price, spend,
                 )
                 self._storage.record_daily_spend(date.today().isoformat(), spend)
+                # Record live trade so polymarket pnl can track it alongside dry-run positions
+                self._storage.append_paper_position({
+                    "condition_id":  signal.condition_id,
+                    "token_id":      signal.token_id,
+                    "market_title":  signal.market_title,
+                    "outcome":       signal.outcome,
+                    "entry_price":   price,
+                    "shares":        shares,
+                    "spend_usdc":    spend,
+                    "opened_at":     signal.detected_at,
+                    "wallet_address": signal.wallet_address,
+                    "username":      signal.username,
+                    "wallet_rank":   signal.wallet_rank,
+                    "is_dry_run":    False,
+                })
                 return CopyResult(
                     signal=signal, status="placed",
                     reason=f"BUY {shares:.2f} shares @ ${price:.4f} (≈${spend:.2f} USDC)",

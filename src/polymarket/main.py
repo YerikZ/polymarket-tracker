@@ -683,11 +683,24 @@ def cmd_pnl(args: argparse.Namespace, client: PolymarketClient, storage: Storage
     """Show paper-trading P&L for all dry-run positions."""
     positions = storage.get_paper_positions()
 
+    # Filter by mode if requested
+    dry_run_only = getattr(args, "dry_run_only", False)
+    live_only    = getattr(args, "live_only", False)
+    if dry_run_only:
+        positions = [p for p in positions if p.get("is_dry_run", True)]
+    elif live_only:
+        positions = [p for p in positions if not p.get("is_dry_run", True)]
+
     if not positions:
-        console.print(
-            "[yellow]No paper positions found.[/yellow]\n"
-            "Run [bold]polymarket watch --copy --dry-run[/bold] to start tracking simulated trades."
-        )
+        if live_only:
+            console.print("[yellow]No live positions found.[/yellow]\n"
+                          "Run [bold]polymarket watch --copy[/bold] (without --dry-run) to place real trades.")
+        elif dry_run_only:
+            console.print("[yellow]No dry-run positions found.[/yellow]\n"
+                          "Run [bold]polymarket watch --copy --dry-run[/bold] to simulate trades.")
+        else:
+            console.print("[yellow]No positions found.[/yellow]\n"
+                          "Run [bold]polymarket watch --copy --dry-run[/bold] to start tracking simulated trades.")
         return
 
     condition_ids    = list({p["condition_id"] for p in positions if p.get("condition_id")})
@@ -767,10 +780,16 @@ def cmd_pnl(args: argparse.Namespace, client: PolymarketClient, storage: Storage
     best_title         = ""
     worst_title        = ""
 
-    table = Table(title="Dry-Run Paper P&L", box=box.HEAVY_HEAD, show_lines=False)
+    tbl_title = (
+        "Dry-Run Positions" if dry_run_only
+        else "Live Positions" if live_only
+        else "All Positions (Dry-Run + Live)"
+    )
+    table = Table(title=tbl_title, box=box.HEAVY_HEAD, show_lines=False)
     table.add_column("#",           style="dim",     justify="right", width=3)
+    table.add_column("Mode",                         width=8)
     table.add_column("Opened",      style="dim",     width=11)
-    table.add_column("Market",      max_width=38)
+    table.add_column("Market",      max_width=36)
     table.add_column("Outcome",     style="cyan",    width=7)
     table.add_column("Status",                       width=10)
     table.add_column("Resolution",  style="dim",     width=10)
@@ -848,13 +867,16 @@ def cmd_pnl(args: argparse.Namespace, client: PolymarketClient, storage: Storage
             pnl_str = f"[{color}]{sign}${pnl:,.2f}[/{color}]"
             val_str = f"${current_value:,.2f}"
 
-        opened = pos.get("opened_at", "")[:10]
-        trader = f"{pos.get('username', '?')} (#{pos.get('wallet_rank', '?')})"
+        opened   = pos.get("opened_at", "")[:10]
+        trader   = f"{pos.get('username', '?')} (#{pos.get('wallet_rank', '?')})"
+        is_dry   = pos.get("is_dry_run", True)
+        mode_str = "[dim]Sim[/dim]" if is_dry else "[bold yellow]Live[/bold yellow]"
 
         table.add_row(
             str(i),
+            mode_str,
             opened,
-            market_title[:38],
+            market_title[:36],
             pos.get("outcome", ""),
             STATUS_DISPLAY.get(pos_status, pos_status),
             resolution[:10] or "—",
@@ -877,12 +899,16 @@ def cmd_pnl(args: argparse.Namespace, client: PolymarketClient, storage: Storage
     win_rate  = (wins / priced * 100) if priced else 0.0
     avg_pnl   = (total_pnl / priced) if priced else 0.0
 
+    n_live    = sum(1 for p in positions if not p.get("is_dry_run", True))
+    n_sim     = len(positions) - n_live
+
     summary = Table(box=box.SIMPLE, show_header=False)
     summary.add_column(style="dim", width=26)
     summary.add_column()
 
     # ── Capital
-    summary.add_row("Total positions",    str(len(positions)))
+    summary.add_row("Total positions",
+                    f"{len(positions)}  [dim]({n_live} live, {n_sim} simulated)[/dim]")
     summary.add_row("Total invested",     f"${total_invested:,.2f} USDC")
     summary.add_row("Current value",      f"${total_current:,.2f} USDC")
     summary.add_row(
@@ -1113,7 +1139,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("balance",   help="Show USDC wallet balance and daily spend")
-    sub.add_parser("pnl",       help="Show paper P&L for all dry-run simulated positions")
+    p_pnl = sub.add_parser("pnl", help="Show P&L for all tracked positions (dry-run + live)")
+    mode_grp = p_pnl.add_mutually_exclusive_group()
+    mode_grp.add_argument("--dry-run-only", action="store_true",
+                          help="Show only simulated dry-run positions")
+    mode_grp.add_argument("--live-only",    action="store_true",
+                          help="Show only real live-traded positions")
 
     p_pos = sub.add_parser("positions", help="Show real open positions and P&L for your wallet")
     p_pos.add_argument(

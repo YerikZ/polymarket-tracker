@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS paper_positions (
     wallet_address      TEXT             NOT NULL DEFAULT '',
     username            TEXT             NOT NULL DEFAULT '',
     wallet_rank         INTEGER          NOT NULL DEFAULT 0,
+    is_dry_run          BOOLEAN          NOT NULL DEFAULT TRUE,
+    -- TRUE  = simulated trade (--dry-run), FALSE = real money placed on-chain
     -- Market resolution status (kept up-to-date by cmd_pnl)
     position_status     TEXT             NOT NULL DEFAULT 'open',
     -- 'open'   = market still active
@@ -93,6 +95,7 @@ CREATE TABLE IF NOT EXISTS paper_positions (
     market_closed       BOOLEAN          NOT NULL DEFAULT FALSE
 );
 -- Migrate existing tables: add new columns if they don't exist yet
+ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS is_dry_run         BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS position_status    TEXT    NOT NULL DEFAULT 'open';
 ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS resolution_outcome TEXT    NOT NULL DEFAULT '';
 ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS market_closed      BOOLEAN NOT NULL DEFAULT FALSE;
