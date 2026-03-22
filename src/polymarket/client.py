@@ -122,11 +122,23 @@ class PolymarketClient:
         )
 
     def markets(self, condition_ids: list[str]) -> list[dict]:
-        return self.get(
-            GAMMA_API,
-            "/markets",
-            params={"condition_ids": ",".join(condition_ids)},
-        )
+        """Fetch market data for a list of condition IDs.
+
+        The GAMMA API does NOT support comma-separated batch lookups —
+        passing multiple IDs returns an empty list silently.
+        We query one-by-one and aggregate.
+        """
+        results = []
+        for cid in condition_ids:
+            try:
+                raw = self.get(GAMMA_API, "/markets", params={"condition_ids": cid})
+                if isinstance(raw, list):
+                    results.extend(raw)
+                elif isinstance(raw, dict) and raw:
+                    results.append(raw)
+            except Exception as exc:
+                logger.debug("markets() lookup failed for %s…: %s", cid[:12], exc)
+        return results
 
     def market_questions(
         self,
@@ -164,19 +176,8 @@ class PolymarketClient:
                 results[extra_tid] = title
 
         if condition_ids:
-            chunk_size = 3
-            for i in range(0, len(condition_ids), chunk_size):
-                chunk = condition_ids[i : i + chunk_size]
-                try:
-                    raw = self.markets(chunk)
-                    for m in (raw if isinstance(raw, list) else [raw]):
-                        _index_market(m)
-                except Exception as exc:
-                    short_ids = ", ".join(c[:10] + "…" for c in chunk)
-                    logger.warning(
-                        "market_questions batch failed [%d/%d] (%s): %s",
-                        i + 1, len(condition_ids), short_ids, type(exc).__name__,
-                    )
+            for m in self.markets(condition_ids):
+                _index_market(m)
 
         # Query individually for token_ids not already covered by conditionId lookup
         for tid in (token_ids or []):
@@ -247,25 +248,14 @@ class PolymarketClient:
                 "winner_token_id":  winner_token_id,
             }
 
-        # Batch fetch — keep chunks small (≤3) to avoid 403s on long URLs.
-        # Yields after each chunk so callers can flush to DB incrementally.
-        chunk_size = 3
-        total      = len(condition_ids)
-        for i in range(0, total, chunk_size):
-            chunk = condition_ids[i : i + chunk_size]
-            try:
-                raw = self.markets(chunk)
-                for m in (raw if isinstance(raw, list) else [raw]):
-                    _parse_market(m)
-            except Exception as exc:
-                short_ids = ", ".join(c[:10] + "…" for c in chunk)
-                logger.warning(
-                    "market_statuses batch failed [%d–%d/%d] (%s): %s",
-                    i + 1, min(i + chunk_size, total), total,
-                    short_ids,
-                    type(exc).__name__,
-                )
-            yield dict(statuses)   # snapshot after each chunk
+        # markets() queries one-by-one; yield after each so cmd_pnl can
+        # flush to DB incrementally and show progress.
+        total = len(condition_ids)
+        for idx, cid in enumerate(condition_ids, 1):
+            raw = self.markets([cid])
+            for m in raw:
+                _parse_market(m)
+            yield dict(statuses), idx, total
             statuses.clear()
 
     def token_prices(self, token_ids: list[str]) -> dict[str, float]:
