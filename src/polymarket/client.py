@@ -161,12 +161,19 @@ class PolymarketClient:
                 results[extra_tid] = title
 
         if condition_ids:
-            try:
-                raw = self.markets(condition_ids)
-                for m in (raw if isinstance(raw, list) else [raw]):
-                    _index_market(m)
-            except Exception as exc:
-                logger.warning("market_questions (by conditionId) failed: %s", exc)
+            chunk_size = 3
+            for i in range(0, len(condition_ids), chunk_size):
+                chunk = condition_ids[i : i + chunk_size]
+                try:
+                    raw = self.markets(chunk)
+                    for m in (raw if isinstance(raw, list) else [raw]):
+                        _index_market(m)
+                except Exception as exc:
+                    short_ids = ", ".join(c[:10] + "…" for c in chunk)
+                    logger.warning(
+                        "market_questions batch failed [%d/%d] (%s): %s",
+                        i + 1, len(condition_ids), short_ids, type(exc).__name__,
+                    )
 
         # Query individually for token_ids not already covered by conditionId lookup
         for tid in (token_ids or []):

@@ -726,20 +726,18 @@ def cmd_pnl(args: argparse.Namespace, client: PolymarketClient, storage: Storage
         if cid:
             pos_by_cid.setdefault(cid, []).append(p)
 
-    # ── Step 1: resolve titles for markets with missing/placeholder titles ─────
-    with console.status(f"Fetching titles for {len(unresolved_tids)} unresolved markets…"):
-        title_map = client.market_questions(
-            condition_ids=condition_ids or None,
-            token_ids=unresolved_tids or None,
-        )
-    if storage.update_paper_titles(title_map):
-        positions = storage.get_paper_positions()
-        # Rebuild reverse index after title refresh
-        pos_by_cid = {}
-        for p in positions:
-            cid = p.get("condition_id", "")
-            if cid:
-                pos_by_cid.setdefault(cid, []).append(p)
+    # ── Step 1: resolve titles only for positions with missing/placeholder titles ──
+    if unresolved_tids:
+        with console.status(f"Fetching titles for {len(unresolved_tids)} unresolved markets…"):
+            title_map = client.market_questions(token_ids=unresolved_tids)
+        if storage.update_paper_titles(title_map):
+            positions = storage.get_paper_positions()
+            # Rebuild reverse index after title refresh
+            pos_by_cid = {}
+            for p in positions:
+                cid = p.get("condition_id", "")
+                if cid:
+                    pos_by_cid.setdefault(cid, []).append(p)
 
     # ── Step 2: fetch market statuses in small chunks, flush DB after each ────
     skipped_n  = len(settled_cids)
