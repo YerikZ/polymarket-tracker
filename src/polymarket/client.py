@@ -228,8 +228,8 @@ class PolymarketClient:
                 "winner_token_id":  winner_token_id,
             }
 
-        # Batch fetch — GAMMA supports comma-separated condition_ids
-        chunk_size = 20
+        # Batch fetch — keep chunks small (≤5) to avoid 403s on long URLs
+        chunk_size = 5
         for i in range(0, len(condition_ids), chunk_size):
             chunk = condition_ids[i : i + chunk_size]
             try:

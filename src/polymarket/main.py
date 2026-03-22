@@ -711,9 +711,21 @@ def cmd_pnl(args: argparse.Namespace, client: PolymarketClient, storage: Storage
         and (not p.get("market_title") or p.get("market_title", "").startswith("(resolving"))
     })
 
+    # Only re-query markets that aren't already definitively resolved in the DB.
+    # Won/lost positions won't change — skip them to cut API calls significantly.
+    settled_statuses = {"won", "lost"}
+    settled_cids = {
+        p["condition_id"] for p in positions
+        if p.get("position_status") in settled_statuses and p.get("condition_id")
+    }
+    pending_condition_ids = [c for c in condition_ids if c not in settled_cids]
+
     # ── Step 1: fetch market statuses and titles FIRST so we know which are resolved ──
-    with console.status(f"Fetching market status & titles for {len(condition_ids)} markets…"):
-        mkt_statuses = client.market_statuses(condition_ids)
+    with console.status(
+        f"Fetching market status for {len(pending_condition_ids)} markets"
+        + (f" (skipping {len(settled_cids)} already resolved)…" if settled_cids else "…")
+    ):
+        mkt_statuses = client.market_statuses(pending_condition_ids)
         title_map    = client.market_questions(
             condition_ids=condition_ids or None,
             token_ids=unresolved_tids or None,
