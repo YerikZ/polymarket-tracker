@@ -41,7 +41,8 @@ class CopierConfig:
 
     # Sizing mode — exactly one should drive the spend amount
     sizing_mode: str = "fixed"           # "fixed" | "pct_balance" | "mirror_pct"
-    fixed_usdc: float = 50.0             # used when sizing_mode = "fixed"
+    fixed_usdc: float = 50.0             # baseline spend when signal.usdc_size == reference_trade_usdc
+    reference_trade_usdc: float = 50.0   # reference signal size for fixed mode proportional scaling
     pct_balance: float = 0.02            # used when sizing_mode = "pct_balance" (2%)
     mirror_pct: float = 0.01             # used when sizing_mode = "mirror_pct" (1% of original)
 
@@ -205,7 +206,18 @@ class CopyTrader:
     def _compute_spend(self, signal: Signal, balance: float) -> float:
         mode = self._cfg.sizing_mode
         if mode == "fixed":
-            return self._cfg.fixed_usdc
+            # Proportional scaling: fixed_usdc is the baseline for reference_trade_usdc.
+            # A larger signal → proportionally more spend; smaller signal → less.
+            ref = self._cfg.reference_trade_usdc
+            if ref > 0 and signal.usdc_size > 0:
+                spend = self._cfg.fixed_usdc * (signal.usdc_size / ref)
+            else:
+                spend = self._cfg.fixed_usdc
+            logger.debug(
+                "Fixed proportional: $%.2f × (%.2f / %.2f) = $%.2f",
+                self._cfg.fixed_usdc, signal.usdc_size, ref, spend,
+            )
+            return round(spend, 2)
         if mode == "pct_balance":
             return balance * self._cfg.pct_balance
         if mode == "mirror_pct":

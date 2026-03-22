@@ -355,6 +355,7 @@ def _build_copy_trader(
             funder=funder,
             sizing_mode=ct_cfg.get("sizing_mode", "fixed"),
             fixed_usdc=float(ct_cfg.get("fixed_usdc", 50.0)),
+            reference_trade_usdc=float(ct_cfg.get("reference_trade_usdc", 50.0)),
             pct_balance=float(ct_cfg.get("pct_balance", 0.02)),
             mirror_pct=float(ct_cfg.get("mirror_pct", 0.01)),
             max_trade_usdc=float(ct_cfg.get("max_trade_usdc", 500.0)),
@@ -375,7 +376,7 @@ def _copy_info_line(copy_trader: CopyTrader | None) -> str:
     c = copy_trader._cfg
     mode  = "[yellow]DRY RUN[/yellow]" if c.dry_run else "[bold green]LIVE TRADING[/bold green]"
     sizing = {
-        "fixed":       f"${c.fixed_usdc:.0f} fixed",
+        "fixed":       f"${c.fixed_usdc:.0f} per ${c.reference_trade_usdc:.0f} reference",
         "pct_balance": f"{c.pct_balance*100:.1f}% of balance",
         "mirror_pct":  f"{c.mirror_pct*100:.1f}% of original",
     }.get(c.sizing_mode, c.sizing_mode)

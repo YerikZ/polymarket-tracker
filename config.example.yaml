@@ -59,13 +59,18 @@ copy_trading:
   funder: ""
 
   # ---- Position sizing (choose one mode) ----
-  # "fixed"       → always spend fixed_usdc per trade
+  # "fixed"       → proportional to the wallet's trade size, anchored to a reference:
+  #                 spend = fixed_usdc × (signal_size / reference_trade_usdc)
+  #                 e.g. fixed_usdc=1, reference_trade_usdc=50:
+  #                   wallet trades $100 → you spend $2
+  #                   wallet trades $25  → you spend $0.50
   # "pct_balance" → spend pct_balance fraction of your USDC balance
   # "mirror_pct"  → spend mirror_pct fraction of what the top trader spent
   sizing_mode: "fixed"
-  fixed_usdc: 1.0          # used when sizing_mode = "fixed"
-  pct_balance: 0.02         # used when sizing_mode = "pct_balance" (2% of balance)
-  mirror_pct: 0.01          # used when sizing_mode = "mirror_pct" (1% of original trade)
+  fixed_usdc: 1.0               # your baseline spend when wallet trades reference_trade_usdc
+  reference_trade_usdc: 50.0    # reference wallet trade size that maps to fixed_usdc
+  pct_balance: 0.02             # used when sizing_mode = "pct_balance" (2% of balance)
+  mirror_pct: 0.01              # used when sizing_mode = "mirror_pct" (1% of original trade)
 
   # ---- Safety guardrails ----
   max_trade_usdc: 5.0     # hard cap per single order (regardless of sizing mode)
