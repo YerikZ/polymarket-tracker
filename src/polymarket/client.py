@@ -1,3 +1,4 @@
+import json
 import logging
 import time
 from typing import Any
@@ -167,6 +168,75 @@ class PolymarketClient:
                 logger.debug("market_questions token lookup failed %s…: %s", tid[:16], exc)
 
         return results
+
+    def market_statuses(self, condition_ids: list[str]) -> dict[str, dict]:
+        """Return resolution status for each condition_id from the GAMMA API.
+
+        Result shape per condition_id:
+        {
+            "closed":            bool,   # market no longer accepting orders
+            "accepting_orders":  bool,   # True only while live
+            "resolved":          bool,   # UMA oracle has settled the market
+            "winner_outcome":    str,    # e.g. "Yes", "No", "Yokohama F·Marinos"
+            "winner_token_id":   str,    # clobTokenId of the winning outcome
+        }
+        """
+        if not condition_ids:
+            return {}
+
+        statuses: dict[str, dict] = {}
+
+        def _parse_market(m: dict) -> None:
+            cid = m.get("conditionId", "")
+            if not cid:
+                return
+
+            closed           = bool(m.get("closed", False))
+            accepting_orders = bool(m.get("acceptingOrders", True))
+            uma_status       = m.get("umaResolutionStatus") or ""
+            resolved         = uma_status == "resolved" or (closed and not accepting_orders)
+
+            # Determine winner from outcomePrices + clobTokenIds
+            winner_outcome  = ""
+            winner_token_id = ""
+            try:
+                raw_prices  = m.get("outcomePrices") or "[]"
+                raw_outcomes = m.get("outcomes") or "[]"
+                raw_tokens  = m.get("clobTokenIds") or "[]"
+
+                prices   = json.loads(raw_prices)  if isinstance(raw_prices,  str) else raw_prices
+                outcomes = json.loads(raw_outcomes) if isinstance(raw_outcomes, str) else raw_outcomes
+                tokens   = json.loads(raw_tokens)  if isinstance(raw_tokens,  str) else raw_tokens
+
+                if prices:
+                    winner_idx = max(range(len(prices)), key=lambda i: float(prices[i]))
+                    # Only declare a winner if the max price is clearly dominant (>= 0.95)
+                    if float(prices[winner_idx]) >= 0.95:
+                        winner_outcome  = outcomes[winner_idx] if winner_idx < len(outcomes) else ""
+                        winner_token_id = str(tokens[winner_idx])  if winner_idx < len(tokens)  else ""
+            except Exception as exc:
+                logger.debug("Could not parse resolution for %s: %s", cid[:16], exc)
+
+            statuses[cid] = {
+                "closed":           closed,
+                "accepting_orders": accepting_orders,
+                "resolved":         resolved,
+                "winner_outcome":   winner_outcome,
+                "winner_token_id":  winner_token_id,
+            }
+
+        # Batch fetch — GAMMA supports comma-separated condition_ids
+        chunk_size = 20
+        for i in range(0, len(condition_ids), chunk_size):
+            chunk = condition_ids[i : i + chunk_size]
+            try:
+                raw = self.markets(chunk)
+                for m in (raw if isinstance(raw, list) else [raw]):
+                    _parse_market(m)
+            except Exception as exc:
+                logger.warning("market_statuses batch failed: %s", exc)
+
+        return statuses
 
     def token_prices(self, token_ids: list[str]) -> dict[str, float]:
         """Return {token_id: current_price} using the CLOB midpoint API.

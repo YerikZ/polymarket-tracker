@@ -202,6 +202,36 @@ class Storage:
                 cur.execute("SELECT * FROM paper_positions ORDER BY id")
                 return [_row_to_dict(r) for r in cur.fetchall()]
 
+    def update_position_statuses(self, updates: list[dict]) -> int:
+        """Persist resolution status for a list of positions.
+
+        Each item in ``updates`` must have:
+            id, position_status, resolution_outcome, market_closed
+        Returns the count of rows updated.
+        """
+        if not updates:
+            return 0
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                psycopg2.extras.execute_values(
+                    cur,
+                    """
+                    UPDATE paper_positions SET
+                        position_status    = data.status,
+                        resolution_outcome = data.resolution_outcome,
+                        market_closed      = data.market_closed
+                    FROM (VALUES %s) AS data(id, status, resolution_outcome, market_closed)
+                    WHERE paper_positions.id = data.id::bigint
+                    """,
+                    [
+                        (u["id"], u["position_status"],
+                         u["resolution_outcome"], u["market_closed"])
+                        for u in updates
+                    ],
+                    template="(%s, %s, %s, %s::boolean)",
+                )
+        return len(updates)
+
     def update_paper_titles(self, title_map: dict[str, str]) -> int:
         """Overwrite unresolved market_titles using title_map (keyed by condition_id or token_id).
 

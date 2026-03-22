@@ -70,23 +70,38 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_tx_hash
 CREATE INDEX IF NOT EXISTS idx_alerts_detected_at ON alerts (detected_at DESC);
 
 CREATE TABLE IF NOT EXISTS paper_positions (
-    id             BIGSERIAL        PRIMARY KEY,
-    condition_id   TEXT             NOT NULL DEFAULT '',
-    token_id       TEXT             NOT NULL DEFAULT '',
-    market_title   TEXT             NOT NULL DEFAULT '',
-    outcome        TEXT             NOT NULL DEFAULT '',
-    entry_price    DOUBLE PRECISION NOT NULL DEFAULT 0,
-    shares         DOUBLE PRECISION NOT NULL DEFAULT 0,
-    spend_usdc     DOUBLE PRECISION NOT NULL DEFAULT 0,
-    opened_at      TIMESTAMPTZ      NOT NULL DEFAULT now(),
-    wallet_address TEXT             NOT NULL DEFAULT '',
-    username       TEXT             NOT NULL DEFAULT '',
-    wallet_rank    INTEGER          NOT NULL DEFAULT 0
+    id                  BIGSERIAL        PRIMARY KEY,
+    condition_id        TEXT             NOT NULL DEFAULT '',
+    token_id            TEXT             NOT NULL DEFAULT '',
+    market_title        TEXT             NOT NULL DEFAULT '',
+    outcome             TEXT             NOT NULL DEFAULT '',
+    entry_price         DOUBLE PRECISION NOT NULL DEFAULT 0,
+    shares              DOUBLE PRECISION NOT NULL DEFAULT 0,
+    spend_usdc          DOUBLE PRECISION NOT NULL DEFAULT 0,
+    opened_at           TIMESTAMPTZ      NOT NULL DEFAULT now(),
+    wallet_address      TEXT             NOT NULL DEFAULT '',
+    username            TEXT             NOT NULL DEFAULT '',
+    wallet_rank         INTEGER          NOT NULL DEFAULT 0,
+    -- Market resolution status (kept up-to-date by cmd_pnl)
+    position_status     TEXT             NOT NULL DEFAULT 'open',
+    -- 'open'   = market still active
+    -- 'won'    = market resolved, our outcome won  (final price 1.0)
+    -- 'lost'   = market resolved, our outcome lost (final price 0.0)
+    -- 'closed' = market closed/settled but resolution unclear
+    resolution_outcome  TEXT             NOT NULL DEFAULT '',
+    -- label of the winning outcome, e.g. 'Yes', 'No', 'Yokohama F·Marinos'
+    market_closed       BOOLEAN          NOT NULL DEFAULT FALSE
 );
+-- Migrate existing tables: add new columns if they don't exist yet
+ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS position_status    TEXT    NOT NULL DEFAULT 'open';
+ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS resolution_outcome TEXT    NOT NULL DEFAULT '';
+ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS market_closed      BOOLEAN NOT NULL DEFAULT FALSE;
+
 CREATE INDEX IF NOT EXISTS idx_paper_condition ON paper_positions (condition_id)
     WHERE condition_id <> '';
 CREATE INDEX IF NOT EXISTS idx_paper_token ON paper_positions (token_id)
     WHERE token_id <> '';
+CREATE INDEX IF NOT EXISTS idx_paper_status ON paper_positions (position_status);
 
 CREATE TABLE IF NOT EXISTS daily_spend (
     date_iso TEXT             PRIMARY KEY,   -- 'YYYY-MM-DD'

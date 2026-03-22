@@ -690,85 +690,153 @@ def cmd_pnl(args: argparse.Namespace, client: PolymarketClient, storage: Storage
         )
         return
 
-    condition_ids = list({p["condition_id"] for p in positions if p.get("condition_id")})
-    all_token_ids = list({p["token_id"] for p in positions if p.get("token_id")})
-
-    # Collect token_ids for positions whose title is still unresolved
-    unresolved_token_ids = list({
-        p["token_id"]
-        for p in positions
+    condition_ids    = list({p["condition_id"] for p in positions if p.get("condition_id")})
+    all_token_ids    = list({p["token_id"]     for p in positions if p.get("token_id")})
+    unresolved_tids  = list({
+        p["token_id"] for p in positions
         if p.get("token_id")
         and (not p.get("market_title") or p.get("market_title", "").startswith("(resolving"))
     })
 
-    with console.status(f"Fetching live prices + titles for {len(all_token_ids)} positions…"):
-        prices     = client.token_prices(all_token_ids)
-        title_map  = client.market_questions(
+    with console.status(f"Fetching prices, titles & market status for {len(all_token_ids)} positions…"):
+        prices         = client.token_prices(all_token_ids)
+        title_map      = client.market_questions(
             condition_ids=condition_ids or None,
-            token_ids=unresolved_token_ids or None,
+            token_ids=unresolved_tids or None,
         )
+        mkt_statuses   = client.market_statuses(condition_ids)
 
-    # Persist resolved titles back to disk so future runs don't need to re-fetch
-    fixed = storage.update_paper_titles(title_map)
-    if fixed:
-        # Reload with the freshly resolved titles
+    # Persist resolved titles
+    if storage.update_paper_titles(title_map):
         positions = storage.get_paper_positions()
 
-    # Build rows
-    total_invested = 0.0
-    total_current  = 0.0
-    total_pnl      = 0.0
-    wins           = 0
-    losses         = 0
-    unpriced       = 0
-    best_pnl       = float("-inf")
-    worst_pnl      = float("inf")
-    best_title     = ""
-    worst_title    = ""
+    # ── Determine each position's status from the API and persist changes ─────
+    status_updates = []
+    for pos in positions:
+        cid    = pos.get("condition_id", "")
+        tid    = pos.get("token_id", "")
+        status = mkt_statuses.get(cid, {})
 
-    table = Table(
-        title="Dry-Run Paper P&L",
-        box=box.HEAVY_HEAD,
-        show_lines=False,
-    )
-    table.add_column("#",          style="dim",        justify="right", width=3)
-    table.add_column("Opened",     style="dim",        width=11)
-    table.add_column("Market",     max_width=42)
-    table.add_column("Outcome",    style="cyan",       width=7)
-    table.add_column("Copied from",style="dim",        width=12)
-    table.add_column("Entry $",    justify="right",    width=8)
-    table.add_column("Now $",      justify="right",    width=8)
-    table.add_column("Shares",     justify="right",    width=8)
-    table.add_column("Invested",   justify="right",    width=10)
-    table.add_column("Value",      justify="right",    width=10)
-    table.add_column("P&L",        justify="right",    width=11)
+        mkt_closed      = status.get("closed", False)
+        resolved        = status.get("resolved", False)
+        winner_token    = status.get("winner_token_id", "")
+        winner_outcome  = status.get("winner_outcome", "")
+
+        if resolved and winner_token:
+            pos_status = "won" if tid == winner_token else "lost"
+        elif mkt_closed:
+            pos_status = "closed"
+        else:
+            pos_status = "open"
+
+        # Only write if something changed
+        if (pos.get("position_status", "open") != pos_status
+                or pos.get("resolution_outcome", "") != winner_outcome
+                or bool(pos.get("market_closed", False)) != mkt_closed):
+            status_updates.append({
+                "id":                 pos["id"],
+                "position_status":    pos_status,
+                "resolution_outcome": winner_outcome,
+                "market_closed":      mkt_closed,
+            })
+            # Update in-memory too so table reflects latest
+            pos["position_status"]    = pos_status
+            pos["resolution_outcome"] = winner_outcome
+            pos["market_closed"]      = mkt_closed
+
+    if status_updates:
+        storage.update_position_statuses(status_updates)
+
+    # ── Build table ───────────────────────────────────────────────────────────
+    STATUS_DISPLAY = {
+        "open":   "[cyan]Open[/cyan]",
+        "won":    "[bold green]Won ✓[/bold green]",
+        "lost":   "[bold red]Lost ✗[/bold red]",
+        "closed": "[dim]Closed[/dim]",
+    }
+
+    total_invested     = 0.0
+    total_current      = 0.0
+    total_pnl          = 0.0
+    realized_pnl       = 0.0
+    unrealized_pnl     = 0.0
+    wins = losses      = 0
+    open_count         = 0
+    best_pnl           = float("-inf")
+    worst_pnl          = float("inf")
+    best_title         = ""
+    worst_title        = ""
+
+    table = Table(title="Dry-Run Paper P&L", box=box.HEAVY_HEAD, show_lines=False)
+    table.add_column("#",           style="dim",     justify="right", width=3)
+    table.add_column("Opened",      style="dim",     width=11)
+    table.add_column("Market",      max_width=38)
+    table.add_column("Outcome",     style="cyan",    width=7)
+    table.add_column("Status",                       width=10)
+    table.add_column("Resolution",  style="dim",     width=10)
+    table.add_column("Copied from", style="dim",     width=12)
+    table.add_column("Entry $",     justify="right", width=8)
+    table.add_column("Now $",       justify="right", width=8)
+    table.add_column("Shares",      justify="right", width=7)
+    table.add_column("Invested",    justify="right", width=9)
+    table.add_column("Value",       justify="right", width=9)
+    table.add_column("P&L",         justify="right", width=11)
 
     for i, pos in enumerate(positions, 1):
         token_id    = pos.get("token_id", "")
         entry_price = float(pos.get("entry_price", 0))
         shares      = float(pos.get("shares", 0))
         invested    = float(pos.get("spend_usdc", 0))
-        cur_price   = prices.get(token_id)
+        pos_status  = pos.get("position_status", "open")
+        resolution  = pos.get("resolution_outcome", "")
+
+        # Determine effective current price:
+        #   won  → 1.0  (shares redeemable at $1)
+        #   lost → 0.0  (shares worthless)
+        #   open/closed → use live CLOB price if available
+        if pos_status == "won":
+            cur_price = 1.0
+        elif pos_status == "lost":
+            cur_price = 0.0
+        else:
+            cur_price = prices.get(token_id)  # may be None
+
+        # Use stored title; fall back to title_map
+        market_title = pos.get("market_title", "")
+        if not market_title or market_title.startswith("(resolving"):
+            market_title = (
+                title_map.get(pos.get("condition_id", ""))
+                or title_map.get(token_id)
+                or market_title
+                or "Unknown market"
+            )
 
         if cur_price is None:
-            # Price unavailable — show dashes
             cur_str = "[dim]?[/dim]"
             pnl_str = "[dim]—[/dim]"
             val_str = "[dim]—[/dim]"
-            unpriced += 1
         else:
-            current_value  = cur_price * shares
-            pnl            = current_value - invested
+            current_value   = cur_price * shares
+            pnl             = current_value - invested
             total_invested += invested
             total_current  += current_value
             total_pnl      += pnl
 
-            if pnl >= 0:
-                wins += 1
+            if pos_status in ("won", "lost"):
+                realized_pnl += pnl
+                if pnl >= 0:
+                    wins += 1
+                else:
+                    losses += 1
             else:
-                losses += 1
+                unrealized_pnl += pnl
+                open_count     += 1
+                if pnl >= 0:
+                    wins += 1
+                else:
+                    losses += 1
 
-            label = stored_title[:32] if (stored_title := pos.get("market_title", "")) else "?"
+            label = market_title[:32]
             if pnl > best_pnl:
                 best_pnl, best_title = pnl, label
             if pnl < worst_pnl:
@@ -783,21 +851,13 @@ def cmd_pnl(args: argparse.Namespace, client: PolymarketClient, storage: Storage
         opened = pos.get("opened_at", "")[:10]
         trader = f"{pos.get('username', '?')} (#{pos.get('wallet_rank', '?')})"
 
-        # Use stored title; fall back to title_map if still unresolved
-        stored_title = pos.get("market_title", "")
-        if not stored_title or stored_title.startswith("(resolving"):
-            stored_title = (
-                title_map.get(pos.get("condition_id", ""))
-                or title_map.get(pos.get("token_id", ""))
-                or stored_title
-                or "Unknown market"
-            )
-
         table.add_row(
             str(i),
             opened,
-            stored_title[:42],
+            market_title[:38],
             pos.get("outcome", ""),
+            STATUS_DISPLAY.get(pos_status, pos_status),
+            resolution[:10] or "—",
             trader,
             f"${entry_price:.4f}",
             cur_str,
@@ -809,70 +869,73 @@ def cmd_pnl(args: argparse.Namespace, client: PolymarketClient, storage: Storage
 
     console.print(table)
 
-    # Summary footer
-    priced = wins + losses
-    pnl_color  = "green" if total_pnl >= 0 else "red"
-    pnl_sign   = "+" if total_pnl >= 0 else ""
-    roi        = (total_pnl / total_invested * 100) if total_invested else 0.0
-    win_rate   = (wins / priced * 100) if priced else 0.0
-    avg_pnl    = (total_pnl / priced) if priced else 0.0
-    avg_sign   = "+" if avg_pnl >= 0 else ""
-    avg_color  = "green" if avg_pnl >= 0 else "red"
+    # ── Summary footer ────────────────────────────────────────────────────────
+    priced    = wins + losses
+    pnl_color = "green" if total_pnl >= 0 else "red"
+    pnl_sign  = "+" if total_pnl >= 0 else ""
+    roi       = (total_pnl / total_invested * 100) if total_invested else 0.0
+    win_rate  = (wins / priced * 100) if priced else 0.0
+    avg_pnl   = (total_pnl / priced) if priced else 0.0
 
     summary = Table(box=box.SIMPLE, show_header=False)
-    summary.add_column(style="dim", width=24)
+    summary.add_column(style="dim", width=26)
     summary.add_column()
 
     # ── Capital
-    summary.add_row("Total positions",   str(len(positions)))
-    summary.add_row("Total invested",    f"${total_invested:,.2f} USDC")
-    summary.add_row("Current value",     f"${total_current:,.2f} USDC")
+    summary.add_row("Total positions",    str(len(positions)))
+    summary.add_row("Total invested",     f"${total_invested:,.2f} USDC")
+    summary.add_row("Current value",      f"${total_current:,.2f} USDC")
     summary.add_row(
         "Total P&L",
         f"[bold {pnl_color}]{pnl_sign}${total_pnl:,.2f}[/bold {pnl_color}]"
         f"  [dim]({pnl_sign}{roi:.1f}% ROI)[/dim]",
     )
+    summary.add_row("", "")
 
-    # ── Win/loss breakdown (only if any priced positions)
+    # ── Realized vs unrealized
+    r_sign  = "+" if realized_pnl   >= 0 else ""
+    u_sign  = "+" if unrealized_pnl >= 0 else ""
+    r_color = "green" if realized_pnl   >= 0 else "red"
+    u_color = "green" if unrealized_pnl >= 0 else "red"
+    summary.add_row(
+        "Realized P&L",
+        f"[{r_color}]{r_sign}${realized_pnl:,.2f}[/{r_color}]"
+        f"  [dim](won/lost markets)[/dim]",
+    )
+    summary.add_row(
+        "Unrealized P&L",
+        f"[{u_color}]{u_sign}${unrealized_pnl:,.2f}[/{u_color}]"
+        f"  [dim]({open_count} open positions)[/dim]",
+    )
+
+    # ── Win/loss breakdown
     if priced:
-        summary.add_row("", "")  # spacer
+        summary.add_row("", "")
         wl_color = "green" if win_rate >= 50 else "red"
         summary.add_row(
             "Win / Loss",
             f"[green]{wins}W[/green] / [red]{losses}L[/red]"
             f"  [{wl_color}]{win_rate:.0f}% win rate[/{wl_color}]",
         )
+        avg_sign  = "+" if avg_pnl >= 0 else ""
+        avg_color = "green" if avg_pnl >= 0 else "red"
         summary.add_row(
             "Avg P&L per position",
             f"[{avg_color}]{avg_sign}${avg_pnl:,.2f}[/{avg_color}]",
         )
 
-    # ── Best / worst trade
+    # ── Best / worst
     if best_pnl != float("-inf"):
         b_sign = "+" if best_pnl >= 0 else ""
-        summary.add_row(
-            "Best trade",
-            f"[green]{b_sign}${best_pnl:,.2f}[/green]  [dim]{best_title}[/dim]",
-        )
+        summary.add_row("Best trade",
+                        f"[green]{b_sign}${best_pnl:,.2f}[/green]  [dim]{best_title}[/dim]")
     if worst_pnl != float("inf"):
-        w_sign = "+" if worst_pnl >= 0 else ""
+        w_sign  = "+" if worst_pnl >= 0 else ""
         w_color = "green" if worst_pnl >= 0 else "red"
-        summary.add_row(
-            "Worst trade",
-            f"[{w_color}]{w_sign}${worst_pnl:,.2f}[/{w_color}]  [dim]{worst_title}[/dim]",
-        )
-
-    # ── Unpriced warning
-    if unpriced:
-        summary.add_row("", "")
-        summary.add_row(
-            "Unpriced positions",
-            f"[dim]{unpriced} (market resolved or token ID missing)[/dim]",
-        )
+        summary.add_row("Worst trade",
+                        f"[{w_color}]{w_sign}${worst_pnl:,.2f}[/{w_color}]  [dim]{worst_title}[/dim]")
 
     console.print(Panel(summary, title="[bold]Summary[/bold]", border_style=pnl_color))
-    if unpriced:
-        console.print("[dim]Prices marked ? = token not found in live market data.[/dim]")
 
 
 # ---------------------------------------------------------------------------
