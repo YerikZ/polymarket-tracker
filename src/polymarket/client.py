@@ -35,26 +35,29 @@ class PolymarketClient:
             self._last_call = time.monotonic()
             try:
                 resp = self._session.get(url, params=params or {}, timeout=15)
-                if resp.status_code == 404:
-                    # Not found — no point retrying, raise immediately
-                    resp.raise_for_status()
-                if resp.status_code == 429:
+                code = resp.status_code
+
+                if code == 429:
                     wait = 2 ** attempt * 2
                     short_url = url if len(url) <= 60 else url[:57] + "…"
                     logger.warning("Rate limited on %s — sleeping %ss", short_url, wait)
                     time.sleep(wait)
                     continue
-                if resp.status_code >= 500:
+                if code >= 500:
                     wait = 2 ** attempt
                     short_url = url if len(url) <= 60 else url[:57] + "…"
-                    logger.warning("Server error %d on %s — retrying in %ss", resp.status_code, short_url, wait)
+                    logger.warning("Server error %d on %s — retrying in %ss", code, short_url, wait)
                     time.sleep(wait)
                     continue
+
+                # All other errors (4xx incl. 404, 403) are not retriable — raise immediately
                 resp.raise_for_status()
                 return resp.json()
+
+            except requests.HTTPError:
+                raise   # 4xx: propagate immediately, no retry, no WARNING
             except requests.RequestException as exc:
                 last_exc = exc
-                # Truncate the URL in the message — long query strings are unreadable
                 short_url = url if len(url) <= 80 else url[:77] + "…"
                 logger.warning(
                     "Request failed (attempt %d/%d): %s — %s",
