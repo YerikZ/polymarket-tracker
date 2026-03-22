@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Editable install
+*.egg-link
+pip-wheel-metadata/
+
+# Secrets & local config overrides — commit config.example.yaml, not config.yaml
+config.yaml
+.env
+.env.*
+config.local.yaml
+secrets.yaml
+*.pem
+*.key
+
+# Data directory (local DB files, JSON snapshots)
+data/
+
+# Logs
+*.log
+logs/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/

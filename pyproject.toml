@@ -1,0 +1,24 @@
+[project]
+name = "polymarket-tracker"
+version = "0.1.0"
+description = "CLI tool for tracking profitable Polymarket wallets and generating copy-trade signals"
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.31.0",
+    "rich>=13.0.0",
+    "pyyaml>=6.0",
+    "py-clob-client>=0.17.0",
+    "websockets>=12.0",
+    "web3>=6.0.0",
+    "psycopg2-binary>=2.9.0",
+]
+
+[project.scripts]
+polymarket = "polymarket.main:main"
+
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

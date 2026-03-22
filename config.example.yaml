@@ -1,0 +1,89 @@
+# Number of top wallets to track
+top_n: 100
+
+# How often the watch loop polls (seconds)
+poll_interval: 300
+
+# Minimum trade size (USDC) to emit a signal — filters micro-trades
+min_position_usdc: 50.0
+
+# Seconds between HTTP requests (rate-limit guard)
+request_delay: 0.5
+
+# Max retries on 429 / 5xx before giving up
+max_retries: 3
+
+# Leaderboard cache TTL (seconds)
+leaderboard_ttl: 3600
+
+# Max age (seconds) of a trade to emit as a signal — trades older than this are ignored.
+# Default 3600 = only copy trades from the last hour (prevents historical activity floods)
+max_signal_age: 3600
+
+# Data storage directory — only used by `polymarket db-migrate` to import
+# legacy JSON files. Not used by the Storage layer itself.
+data_dir: "./data"
+
+# PostgreSQL connection string.
+# Override with env var: POLYMARKET_DATABASE_URL=postgresql://user:pass@host/db
+database_url: "postgresql://polymarket:polymarket@localhost:5433/polymarket"
+
+# Logging level: DEBUG | INFO | WARNING
+log_level: INFO
+
+# ---------------------------------------------------------------------------
+# Real-time WebSocket stream (default mode for `polymarket watch`)
+# ---------------------------------------------------------------------------
+
+# Polygon mainnet WebSocket RPC URL.
+# Get a free key at https://www.alchemy.com → Polygon Mainnet → WebSocket URL
+# Or set via env var: POLYMARKET_POLYGON_WSS=wss://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY
+#
+# Leave blank to fall back to polling mode automatically.
+polygon_wss: "wss://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY_HERE"
+
+# How often (seconds) to re-fetch the leaderboard and update tracked wallets
+# while the WebSocket stream is running (default: 10 minutes)
+wallet_refresh_interval: 600
+
+# ---------------------------------------------------------------------------
+# Copy-trading (only active when `polymarket watch --copy` is used)
+# ---------------------------------------------------------------------------
+copy_trading:
+  # Your Polygon wallet private key — KEEP THIS SECRET, never commit it.
+  # Recommended: set via environment variable POLYMARKET_PRIVATE_KEY instead.
+  private_key: ""
+
+  # Your Polymarket proxy wallet address (the 0x address you use on polymarket.com)
+  # Recommended: set via environment variable POLYMARKET_FUNDER instead.
+  funder: ""
+
+  # ---- Position sizing (choose one mode) ----
+  # "fixed"       → always spend fixed_usdc per trade
+  # "pct_balance" → spend pct_balance fraction of your USDC balance
+  # "mirror_pct"  → spend mirror_pct fraction of what the top trader spent
+  sizing_mode: "fixed"
+  fixed_usdc: 1.0          # used when sizing_mode = "fixed"
+  pct_balance: 0.02         # used when sizing_mode = "pct_balance" (2% of balance)
+  mirror_pct: 0.01          # used when sizing_mode = "mirror_pct" (1% of original trade)
+
+  # ---- Safety guardrails ----
+  max_trade_usdc: 5.0     # hard cap per single order (regardless of sizing mode)
+  daily_limit_usdc: 100.0  # total USDC you're willing to spend in one day
+
+  # ---- Execution ----
+  # dry_run: true  → show what WOULD be placed, never submit (default & recommended to start)
+  # dry_run: false → live trading, real money
+  dry_run: true
+
+  # Price slippage buffer added to signal price to improve fill probability
+  slippage: 0.01
+
+  # ---- Score-based filtering ----
+  # min_score: skip wallets scoring below this (0 = disabled, copy everyone)
+  # Tiers: A=80+, B=65+, C=50+, WATCH=35+, SKIP=<35
+  min_score: 50.0
+
+  # score_scale_size: multiply fixed_usdc by wallet's copy_size_pct
+  # e.g. Tier B (0.7) × $50 = $35 actual spend
+  score_scale_size: true
