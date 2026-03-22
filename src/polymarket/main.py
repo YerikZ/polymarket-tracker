@@ -423,7 +423,7 @@ def cmd_watch(
     # Compute initial scores so copy_trader knows tiers before first signal
     if copy_trader:
         with console.status("Computing initial wallet scores…"):
-            wallets = scanner.fetch_top_wallets()
+            wallets = scanner.fetch_top_wallets(force_refresh=getattr(args, "refresh", False))
             _compute_and_push_scores(wallets, analyzer, copy_trader)
 
     if args.poll:
@@ -476,7 +476,7 @@ def _cmd_watch_poll(
         render_signal(sig, result)
 
     try:
-        monitor.run(on_signal=on_signal)
+        monitor.run(on_signal=on_signal, force_refresh=getattr(args, "refresh", False))
     except KeyboardInterrupt:
         alerts = storage.get_alerts(limit=1000)
         console.print(f"\n[bold]Stopped.[/bold] {len(alerts)} total alerts saved.")
@@ -495,7 +495,7 @@ async def _cmd_watch_stream(
     analyzer: WalletAnalyzer | None = None,
 ) -> None:
     with console.status("Fetching top wallets…"):
-        wallets = scanner.fetch_top_wallets()
+        wallets = scanner.fetch_top_wallets(force_refresh=getattr(args, "refresh", False))
 
     stream = PolymarketStream(
         wss_url=wss_url,
@@ -1190,6 +1190,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch.add_argument(
         "--dry-run", action="store_true", dest="dry_run",
         help="Simulate orders without submitting (overrides config dry_run)",
+    )
+    p_watch.add_argument(
+        "--refresh", action="store_true",
+        help="Force re-fetch the leaderboard on startup, ignoring the TTL cache "
+             "(useful after changing top_n in config.yaml)",
     )
 
     sub.add_parser("balance",   help="Show USDC wallet balance and daily spend")

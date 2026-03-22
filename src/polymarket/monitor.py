@@ -45,8 +45,13 @@ class SignalMonitor:
         # condition_id → resolved title (avoid repeated GAMMA lookups within a session)
         self._title_cache: dict[str, str] = {}
 
-    def run(self, on_signal: Callable[[Signal], None]) -> None:
-        """Blocking loop — Ctrl-C to stop."""
+    def run(self, on_signal: Callable[[Signal], None], force_refresh: bool = False) -> None:
+        """Blocking loop — Ctrl-C to stop.
+
+        Args:
+            force_refresh: If True, bypass the leaderboard TTL cache on the
+                           first fetch (useful after changing top_n in config).
+        """
         logger.info(
             "Starting monitor: %d wallets, poll every %ds, min size $%.0f",
             self._scanner._top_n,
@@ -58,7 +63,8 @@ class SignalMonitor:
             poll_count += 1
             logger.info("Poll #%d …", poll_count)
             try:
-                wallets = self._scanner.fetch_top_wallets()
+                # Force refresh only on the first poll — subsequent polls use TTL normally
+                wallets = self._scanner.fetch_top_wallets(force_refresh=force_refresh and poll_count == 1)
                 for wallet in wallets:
                     signals = self._poll_wallet(wallet)
                     for sig in signals:
