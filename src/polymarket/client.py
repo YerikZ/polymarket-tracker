@@ -35,6 +35,9 @@ class PolymarketClient:
             self._last_call = time.monotonic()
             try:
                 resp = self._session.get(url, params=params or {}, timeout=15)
+                if resp.status_code == 404:
+                    # Not found — no point retrying, raise immediately
+                    resp.raise_for_status()
                 if resp.status_code == 429:
                     wait = 2 ** attempt * 2
                     logger.warning("Rate limited. Sleeping %ss (attempt %d)", wait, attempt + 1)
@@ -256,5 +259,6 @@ class PolymarketClient:
                 if mid is not None:
                     prices[tid] = float(mid)
             except Exception as exc:
-                logger.debug("midpoint lookup failed for token %s…: %s", tid[:16], exc)
+                # 404 is expected for resolved/expired tokens — suppress to debug
+                logger.debug("midpoint lookup skipped for token %s…: %s", tid[:16], exc)
         return prices

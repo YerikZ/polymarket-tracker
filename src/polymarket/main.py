@@ -711,8 +711,29 @@ def cmd_pnl(args: argparse.Namespace, client: PolymarketClient, storage: Storage
         and (not p.get("market_title") or p.get("market_title", "").startswith("(resolving"))
     })
 
-    with console.status(f"Fetching prices, titles & market status for {len(all_token_ids)} positions…"):
-        prices         = client.token_prices(all_token_ids)
+    # Only query CLOB for open positions — resolved tokens return 404 (no longer on order book).
+    # Won positions are worth $1.00; lost positions are worth $0.00.
+    open_token_ids = list({
+        p["token_id"] for p in positions
+        if p.get("token_id") and p.get("position_status", "open") == "open"
+    })
+    # Pre-fill known prices for resolved positions so P&L renders correctly
+    prices: dict[str, float] = {}
+    for p in positions:
+        tid = p.get("token_id", "")
+        if not tid:
+            continue
+        status = p.get("position_status", "open")
+        if status == "won":
+            prices[tid] = 1.0
+        elif status == "lost":
+            prices[tid] = 0.0
+
+    with console.status(
+        f"Fetching prices for {len(open_token_ids)} open positions "
+        f"(skipping {len(all_token_ids) - len(open_token_ids)} resolved)…"
+    ):
+        prices.update(client.token_prices(open_token_ids))
         title_map      = client.market_questions(
             condition_ids=condition_ids or None,
             token_ids=unresolved_tids or None,
