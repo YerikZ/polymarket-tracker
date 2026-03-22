@@ -711,40 +711,19 @@ def cmd_pnl(args: argparse.Namespace, client: PolymarketClient, storage: Storage
         and (not p.get("market_title") or p.get("market_title", "").startswith("(resolving"))
     })
 
-    # Only query CLOB for open positions — resolved tokens return 404 (no longer on order book).
-    # Won positions are worth $1.00; lost positions are worth $0.00.
-    open_token_ids = list({
-        p["token_id"] for p in positions
-        if p.get("token_id") and p.get("position_status", "open") == "open"
-    })
-    # Pre-fill known prices for resolved positions so P&L renders correctly
-    prices: dict[str, float] = {}
-    for p in positions:
-        tid = p.get("token_id", "")
-        if not tid:
-            continue
-        status = p.get("position_status", "open")
-        if status == "won":
-            prices[tid] = 1.0
-        elif status == "lost":
-            prices[tid] = 0.0
-
-    with console.status(
-        f"Fetching prices for {len(open_token_ids)} open positions "
-        f"(skipping {len(all_token_ids) - len(open_token_ids)} resolved)…"
-    ):
-        prices.update(client.token_prices(open_token_ids))
-        title_map      = client.market_questions(
+    # ── Step 1: fetch market statuses and titles FIRST so we know which are resolved ──
+    with console.status(f"Fetching market status & titles for {len(condition_ids)} markets…"):
+        mkt_statuses = client.market_statuses(condition_ids)
+        title_map    = client.market_questions(
             condition_ids=condition_ids or None,
             token_ids=unresolved_tids or None,
         )
-        mkt_statuses   = client.market_statuses(condition_ids)
 
     # Persist resolved titles
     if storage.update_paper_titles(title_map):
         positions = storage.get_paper_positions()
 
-    # ── Determine each position's status from the API and persist changes ─────
+    # ── Step 2: update position_status in memory (and DB) from fresh API data ──
     status_updates = []
     for pos in positions:
         cid    = pos.get("condition_id", "")
@@ -773,13 +752,36 @@ def cmd_pnl(args: argparse.Namespace, client: PolymarketClient, storage: Storage
                 "resolution_outcome": winner_outcome,
                 "market_closed":      mkt_closed,
             })
-            # Update in-memory too so table reflects latest
-            pos["position_status"]    = pos_status
-            pos["resolution_outcome"] = winner_outcome
-            pos["market_closed"]      = mkt_closed
+        # Always update in-memory so price fetch below sees fresh status
+        pos["position_status"]    = pos_status
+        pos["resolution_outcome"] = winner_outcome
+        pos["market_closed"]      = mkt_closed
 
     if status_updates:
         storage.update_position_statuses(status_updates)
+
+    # ── Step 3: fetch CLOB prices only for open positions ─────────────────────
+    # Resolved tokens (won/lost/closed) are no longer on the order book → 404.
+    # Their prices are deterministic: won=1.0, lost=0.0, closed=use entry price.
+    open_token_ids = list({
+        p["token_id"] for p in positions
+        if p.get("token_id") and p.get("position_status", "open") == "open"
+    })
+    prices: dict[str, float] = {}
+    for p in positions:
+        tid    = p.get("token_id", "")
+        status = p.get("position_status", "open")
+        if status == "won":
+            prices[tid] = 1.0
+        elif status == "lost":
+            prices[tid] = 0.0
+
+    skipped = len(all_token_ids) - len(open_token_ids)
+    with console.status(
+        f"Fetching prices for {len(open_token_ids)} open positions"
+        + (f" (skipping {skipped} resolved/closed)…" if skipped else "…")
+    ):
+        prices.update(client.token_prices(open_token_ids))
 
     # ── Build table ───────────────────────────────────────────────────────────
     STATUS_DISPLAY = {
