@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 DATA_API = "https://data-api.polymarket.com"
 GAMMA_API = "https://gamma-api.polymarket.com"
+CLOB_API  = "https://clob.polymarket.com"
 
 
 class PolymarketClient:
@@ -167,27 +168,23 @@ class PolymarketClient:
 
         return results
 
-    def token_prices(self, condition_ids: list[str]) -> dict[str, float]:
-        """Return {token_id: current_price} for all tokens in the given markets."""
-        if not condition_ids:
-            return {}
-        try:
-            raw = self.markets(condition_ids)
-        except Exception as exc:
-            logger.warning("markets fetch failed: %s", exc)
-            return {}
+    def token_prices(self, token_ids: list[str]) -> dict[str, float]:
+        """Return {token_id: current_price} using the CLOB midpoint API.
 
+        The GAMMA markets API does not reliably return token prices (tokens array
+        is frequently null for older markets, and the bulk condition_ids parameter
+        silently returns empty results). The CLOB /midpoint endpoint is queried
+        per token_id and is the authoritative real-time price source.
+        """
         prices: dict[str, float] = {}
-        for market in raw if isinstance(raw, list) else [raw]:
-            closed = market.get("closed", False)
-            for token in market.get("tokens", []):
-                tid = token.get("token_id") or token.get("tokenId", "")
-                if not tid:
-                    continue
-                if token.get("winner"):
-                    prices[tid] = 1.0   # resolved winner → full payout
-                elif closed:
-                    prices[tid] = 0.0   # resolved loser → worthless
-                else:
-                    prices[tid] = float(token.get("price", 0))
+        for tid in token_ids:
+            if not tid:
+                continue
+            try:
+                raw = self.get(CLOB_API, "/midpoint", params={"token_id": tid})
+                mid = raw.get("mid") if isinstance(raw, dict) else None
+                if mid is not None:
+                    prices[tid] = float(mid)
+            except Exception as exc:
+                logger.debug("midpoint lookup failed for token %s…: %s", tid[:16], exc)
         return prices

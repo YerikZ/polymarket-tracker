@@ -689,6 +689,7 @@ def cmd_pnl(args: argparse.Namespace, client: PolymarketClient, storage: Storage
         return
 
     condition_ids = list({p["condition_id"] for p in positions if p.get("condition_id")})
+    all_token_ids = list({p["token_id"] for p in positions if p.get("token_id")})
 
     # Collect token_ids for positions whose title is still unresolved
     unresolved_token_ids = list({
@@ -696,13 +697,12 @@ def cmd_pnl(args: argparse.Namespace, client: PolymarketClient, storage: Storage
         for p in positions
         if p.get("token_id")
         and (not p.get("market_title") or p.get("market_title", "").startswith("(resolving"))
-        and not p.get("condition_id")   # condition_id lookup will cover the rest
     })
 
-    with console.status(f"Fetching live prices + titles for {len(condition_ids)} markets…"):
-        prices     = client.token_prices(condition_ids)
+    with console.status(f"Fetching live prices + titles for {len(all_token_ids)} positions…"):
+        prices     = client.token_prices(all_token_ids)
         title_map  = client.market_questions(
-            condition_ids=condition_ids,
+            condition_ids=condition_ids or None,
             token_ids=unresolved_token_ids or None,
         )
 
