@@ -436,7 +436,7 @@ def cmd_watch(
                 "(Polygon Mainnet → WebSocket URL).\n\n"
                 "Falling back to polling mode ([dim]--poll[/dim])."
             )
-            _cmd_watch_poll(args, client, scanner, storage, copy_trader)
+            _cmd_watch_poll(args, client, scanner, storage, cfg, copy_trader)
         else:
             asyncio.run(_cmd_watch_stream(args, client, scanner, storage, cfg, copy_trader, wss_url, analyzer))
 
@@ -448,6 +448,7 @@ def _cmd_watch_poll(
     client: PolymarketClient,
     scanner: LeaderboardScanner,
     storage: Storage,
+    cfg: dict,
     copy_trader: CopyTrader | None,
 ) -> None:
     monitor = SignalMonitor(
