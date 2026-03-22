@@ -362,6 +362,7 @@ def _build_copy_trader(
             daily_limit_usdc=float(ct_cfg.get("daily_limit_usdc", 1000.0)),
             dry_run=dry_run,
             slippage=float(ct_cfg.get("slippage", 0.01)),
+            blocked_keywords=list(ct_cfg.get("blocked_keywords", [])),
             min_score=float(ct_cfg.get("min_score", 50.0)),
             score_scale_size=bool(ct_cfg.get("score_scale_size", True)),
         ),

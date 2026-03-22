@@ -54,6 +54,11 @@ class CopierConfig:
     dry_run: bool = True                 # True = simulate only, never submit
     slippage: float = 0.01              # add this to price for better fill (e.g. 0.01 = +1¢)
 
+    # Market filters
+    blocked_keywords: list = field(default_factory=list)
+    # Any market whose title contains one of these words (case-insensitive) is skipped.
+    # Example: ["bitcoin", "ethereum", "crypto", "btc", "eth", "solana"]
+
     # Scoring
     min_score: float = 50.0             # skip wallets with score below this (0 = disable)
     score_scale_size: bool = True        # scale position size by wallet's copy_size_pct
@@ -89,6 +94,16 @@ class CopyTrader:
                 signal=signal, status="skipped",
                 reason=f"Market appears resolved (price={signal.price:.4f}). Skipping.",
             )
+
+        # Skip blocked market categories
+        if self._cfg.blocked_keywords:
+            title_lower = signal.market_title.lower()
+            for kw in self._cfg.blocked_keywords:
+                if kw.lower() in title_lower:
+                    return CopyResult(
+                        signal=signal, status="skipped",
+                        reason=f"Market blocked by keyword '{kw}': {signal.market_title[:50]}",
+                    )
 
         # Skip if already invested in this market
         if self._storage.has_paper_position(signal.condition_id, signal.token_id):
