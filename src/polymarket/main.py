@@ -301,7 +301,7 @@ def cmd_top(args: argparse.Namespace, client: PolymarketClient, scanner: Leaderb
         console.print("[red]No wallets found. Try --refresh or check your internet connection.[/red]")
         return
 
-    n = min(args.limit, len(wallets))
+    n = min(args.limit if args.limit is not None else len(wallets), len(wallets))
     console.print(f"[dim]Analyzing {n} wallets…[/dim]")
     stats_list: list[WalletStats] = []
     for i, w in enumerate(wallets[:n], 1):
@@ -1161,7 +1161,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     p_top = sub.add_parser("top", help="Show top profitable wallets")
-    p_top.add_argument("--limit", type=int, default=20, help="Number of wallets to show")
+    p_top.add_argument("--limit", type=int, default=None,
+                       help="Number of wallets to analyse (default: top_n from config)")
     p_top.add_argument("--refresh", action="store_true", help="Force refresh leaderboard cache")
 
     p_wallet = sub.add_parser("wallet", help="Analyze a specific wallet")
