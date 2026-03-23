@@ -363,6 +363,7 @@ def _build_copy_trader(
             dry_run=dry_run,
             slippage=float(ct_cfg.get("slippage", 0.01)),
             blocked_keywords=list(ct_cfg.get("blocked_keywords", [])),
+            allowed_keywords=list(ct_cfg.get("allowed_keywords", [])),
             min_score=float(ct_cfg.get("min_score", 50.0)),
             score_scale_size=bool(ct_cfg.get("score_scale_size", True)),
         ),

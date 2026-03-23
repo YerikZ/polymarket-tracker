@@ -59,6 +59,11 @@ class CopierConfig:
     # Any market whose title contains one of these words (case-insensitive) is skipped.
     # Example: ["bitcoin", "ethereum", "crypto", "btc", "eth", "solana"]
 
+    allowed_keywords: list = field(default_factory=list)
+    # If non-empty, ONLY markets whose title contains at least one of these words are copied.
+    # Example: ["nfl", "nba", "soccer", "premier league", "champions league", "ufc"]
+    # Leave empty [] to allow all markets (subject to blocked_keywords above).
+
     # Scoring
     min_score: float = 50.0             # skip wallets with score below this (0 = disable)
     score_scale_size: bool = True        # scale position size by wallet's copy_size_pct
@@ -96,14 +101,22 @@ class CopyTrader:
             )
 
         # Skip blocked market categories
+        title_lower = signal.market_title.lower()
         if self._cfg.blocked_keywords:
-            title_lower = signal.market_title.lower()
             for kw in self._cfg.blocked_keywords:
                 if kw.lower() in title_lower:
                     return CopyResult(
                         signal=signal, status="skipped",
                         reason=f"Market blocked by keyword '{kw}': {signal.market_title[:50]}",
                     )
+
+        # Allowlist: if set, skip any market that doesn't match at least one keyword
+        if self._cfg.allowed_keywords:
+            if not any(kw.lower() in title_lower for kw in self._cfg.allowed_keywords):
+                return CopyResult(
+                    signal=signal, status="skipped",
+                    reason=f"Market not in allowlist: {signal.market_title[:50]}",
+                )
 
         # Skip if already invested in this market
         if self._storage.has_paper_position(signal.condition_id, signal.token_id):
