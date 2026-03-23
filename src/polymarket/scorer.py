@@ -340,18 +340,25 @@ class WalletScorer:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-_CATEGORY_KEYWORDS: dict[str, list[str]] = {
-    "Politics":  ["election", "president", "senate", "congress", "vote", "trump", "biden",
-                  "harris", "republican", "democrat", "political", "govern", "minister"],
-    "Sports":    ["nba", "nfl", "nhl", "mlb", "soccer", "football", "basketball", "tennis",
-                  "golf", "f1", "olympics", "championship", "league", "super bowl", "world cup"],
-    "Crypto":    ["bitcoin", "btc", "eth", "ethereum", "crypto", "token", "defi", "solana",
-                  "price", "market cap", "altcoin", "nft"],
-    "Economics": ["fed", "interest rate", "inflation", "gdp", "recession", "unemployment",
-                  "cpi", "jobs", "economy", "tariff", "trade"],
-    "Science":   ["nasa", "spacex", "climate", "ai ", "artificial intelligence", "drug",
-                  "fda", "vaccine", "covid", "hurricane"],
+CATEGORY_KEYWORDS: dict[str, list[str]] = {
+    "Politics":    ["election", "president", "senate", "congress", "vote", "trump", "biden",
+                    "harris", "republican", "democrat", "political", "govern", "minister"],
+    "Sports":      ["nba", "nfl", "nhl", "mlb", "soccer", "football", "basketball", "tennis",
+                    "golf", "f1", "formula 1", "olympics", "championship", "league",
+                    "super bowl", "world cup", "ufc", "mma", "boxing", "cricket", "rugby"],
+    "Crypto":      ["bitcoin", "btc", "eth", "ethereum", "crypto", "token", "defi", "solana",
+                    "price", "market cap", "altcoin", "nft"],
+    "Economics":   ["fed", "interest rate", "inflation", "gdp", "recession", "unemployment",
+                    "cpi", "jobs", "economy", "tariff", "trade"],
+    "Science":     ["nasa", "spacex", "climate", "ai ", "artificial intelligence", "drug",
+                    "fda", "vaccine", "covid", "hurricane"],
+    "Culture":     ["oscar", "grammy", "emmy", "box office", "movie", "album", "celebrity",
+                    "award", "music", "film", "tv show", "streaming"],
+    "Geopolitics": ["war", "nato", "ukraine", "russia", "china", "iran", "israel", "taiwan",
+                    "sanction", "ceasefire", "treaty", "military"],
 }
+# Keep the old private name as an alias so scorer internals still work
+_CATEGORY_KEYWORDS = CATEGORY_KEYWORDS
 _MIN_CATEGORY_TRADES = 5  # need at least this many to call it a "strong" category
 
 

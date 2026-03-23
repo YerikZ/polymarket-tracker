@@ -20,7 +20,28 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 
 from .models import CopyResult, Signal, WalletScore
+from .scorer import CATEGORY_KEYWORDS
 from .storage import Storage
+
+
+def _expand_keywords(keywords: list[str]) -> list[str]:
+    """Expand category names (e.g. 'sports') into their full keyword lists.
+
+    Any entry that matches a known category name (case-insensitive) is replaced
+    with all keywords for that category. Literal keywords pass through unchanged.
+
+    Example:
+        ["sports", "oscar"] → ["nba", "nfl", ..., "oscar"]
+    """
+    expanded = []
+    known = {k.lower(): v for k, v in CATEGORY_KEYWORDS.items()}
+    for entry in keywords:
+        cat_keywords = known.get(entry.lower())
+        if cat_keywords:
+            expanded.extend(cat_keywords)
+        else:
+            expanded.append(entry)
+    return expanded
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +96,9 @@ class CopyTrader:
         self._storage = storage
         self._clob: object | None = None  # initialised lazily on first trade
         self._scores: dict[str, WalletScore] = {}  # address → latest score
+        # Pre-expand category names → keyword lists once at startup
+        self._blocked = _expand_keywords(config.blocked_keywords)
+        self._allowed = _expand_keywords(config.allowed_keywords)
 
     def update_scores(self, scores: dict[str, WalletScore]) -> None:
         """Called by cmd_watch after computing/refreshing wallet scores."""
@@ -100,10 +124,10 @@ class CopyTrader:
                 reason=f"Market appears resolved (price={signal.price:.4f}). Skipping.",
             )
 
-        # Skip blocked market categories
+        # Skip blocked market categories / keywords
         title_lower = signal.market_title.lower()
-        if self._cfg.blocked_keywords:
-            for kw in self._cfg.blocked_keywords:
+        if self._blocked:
+            for kw in self._blocked:
                 if kw.lower() in title_lower:
                     return CopyResult(
                         signal=signal, status="skipped",
@@ -111,8 +135,8 @@ class CopyTrader:
                     )
 
         # Allowlist: if set, skip any market that doesn't match at least one keyword
-        if self._cfg.allowed_keywords:
-            if not any(kw.lower() in title_lower for kw in self._cfg.allowed_keywords):
+        if self._allowed:
+            if not any(kw.lower() in title_lower for kw in self._allowed):
                 return CopyResult(
                     signal=signal, status="skipped",
                     reason=f"Market not in allowlist: {signal.market_title[:50]}",
