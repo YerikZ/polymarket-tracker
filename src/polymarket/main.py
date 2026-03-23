@@ -691,6 +691,18 @@ def cmd_pnl(args: argparse.Namespace, client: PolymarketClient, storage: Storage
     elif live_only:
         positions = [p for p in positions if not p.get("is_dry_run", True)]
 
+    # Filter by opening date
+    date_filter  = getattr(args, "date", None)
+    date_from    = getattr(args, "date_from", None)
+    date_to      = getattr(args, "date_to", None)
+    if date_filter:
+        positions = [p for p in positions if p.get("opened_at", "")[:10] == date_filter]
+    else:
+        if date_from:
+            positions = [p for p in positions if p.get("opened_at", "")[:10] >= date_from]
+        if date_to:
+            positions = [p for p in positions if p.get("opened_at", "")[:10] <= date_to]
+
     if not positions:
         if live_only:
             console.print("[yellow]No live positions found.[/yellow]\n"
@@ -1205,6 +1217,13 @@ def build_parser() -> argparse.ArgumentParser:
                           help="Show only simulated dry-run positions")
     mode_grp.add_argument("--live-only",    action="store_true",
                           help="Show only real live-traded positions")
+    date_grp = p_pnl.add_mutually_exclusive_group()
+    date_grp.add_argument("--date", metavar="YYYY-MM-DD",
+                          help="Show only positions opened on this day")
+    date_grp.add_argument("--from", dest="date_from", metavar="YYYY-MM-DD",
+                          help="Show positions opened on or after this date")
+    p_pnl.add_argument("--to", dest="date_to", metavar="YYYY-MM-DD",
+                       help="Show positions opened on or before this date (use with --from)")
 
     p_pos = sub.add_parser("positions", help="Show real open positions and P&L for your wallet")
     p_pos.add_argument(
