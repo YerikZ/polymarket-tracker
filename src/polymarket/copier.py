@@ -27,9 +27,9 @@ logger = logging.getLogger(__name__)
 # Lazy import so the tool works without py-clob-client for users who only watch
 def _clob_imports():
     from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import OrderArgs, OrderType
+    from py_clob_client.clob_types import OrderArgs, OrderType, BalanceAllowanceParams, AssetType
     from py_clob_client.order_builder.constants import BUY, SELL
-    return ClobClient, OrderArgs, OrderType, BUY, SELL
+    return ClobClient, OrderArgs, OrderType, BUY, SELL, BalanceAllowanceParams, AssetType
 
 
 @dataclass
@@ -197,7 +197,7 @@ class CopyTrader:
 
     def _get_client(self):
         if self._clob is None:
-            ClobClient, _, _, _, _ = _clob_imports()
+            ClobClient, _, _, _, _, _, _ = _clob_imports()
             self._clob = ClobClient(
                 "https://clob.polymarket.com",
                 key=self._cfg.private_key,
@@ -213,8 +213,13 @@ class CopyTrader:
         if self._cfg.dry_run and not self._cfg.private_key:
             return 0.0
         try:
-            raw = self._get_client().get_balance()
-            return float(raw) / 1e6  # USDC has 6 decimals
+            _, _, _, _, _, BalanceAllowanceParams, AssetType = _clob_imports()
+            resp = self._get_client().get_balance_allowance(
+                BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            )
+            # resp is a dict: {"balance": "1000000", "allowance": "..."}
+            raw = resp.get("balance", 0)
+            return float(raw) / 1e6  # USDC has 6 decimals on-chain
         except Exception as exc:
             logger.warning("Balance fetch failed: %s", exc)
             return 0.0
@@ -243,7 +248,7 @@ class CopyTrader:
 
     def _place_order(self, signal: Signal, shares: float, price: float, spend: float) -> CopyResult:
         try:
-            ClobClient, OrderArgs, OrderType, BUY, _ = _clob_imports()
+            ClobClient, OrderArgs, OrderType, BUY, _, _, _ = _clob_imports()
             client = self._get_client()
 
             order_args = OrderArgs(
