@@ -71,6 +71,7 @@ class CopierConfig:
     # Safety limits
     max_trade_usdc: float = 500.0        # hard cap per trade
     daily_limit_usdc: float = 1000.0     # total cap for today
+    min_shares: float = 5.0              # Polymarket CLOB minimum order size (shares, not USDC)
 
     # Execution
     dry_run: bool = True                 # True = simulate only, never submit
@@ -180,6 +181,18 @@ class CopyTrader:
         order_price = min(order_price, 0.99)  # price can't exceed 0.99 on Polymarket
         shares = round(spend / order_price, 2)
 
+        # Polymarket CLOB rejects orders below 5 shares
+        if shares < self._cfg.min_shares:
+            min_spend = round(self._cfg.min_shares * order_price, 2)
+            return CopyResult(
+                signal=signal, status="skipped",
+                reason=(
+                    f"Order too small: {shares:.2f} shares < minimum {self._cfg.min_shares:.0f} shares. "
+                    f"Need at least ${min_spend:.2f} USDC at this price (${order_price:.4f}/share). "
+                    f"Increase fixed_usdc or reference_trade_usdc in config."
+                ),
+            )
+
         if self._cfg.dry_run:
             logger.info(
                 "[DRY RUN] Would BUY %.2f shares of %s @ $%.4f (≈$%.2f USDC)",
@@ -230,7 +243,18 @@ class CopyTrader:
                 funder=self._cfg.funder,
             )
             self._clob.set_api_creds(self._clob.create_or_derive_api_creds())
-            logger.info("CLOB client initialised for funder %s", self._cfg.funder[:10] + "…")
+            signer = self._clob.get_address()
+            logger.info(
+                "CLOB client ready — signer (EOA): %s | funder (proxy): %s",
+                signer, self._cfg.funder,
+            )
+            if signer.lower() == self._cfg.funder.lower():
+                logger.info("EOA mode: signer == funder (signature_type should be 0)")
+            else:
+                logger.info(
+                    "Proxy mode: signer is operator of funder proxy wallet "
+                    "(ensure %s is approved on the CTF Exchange)", signer
+                )
         return self._clob
 
     def _get_balance(self) -> float:
