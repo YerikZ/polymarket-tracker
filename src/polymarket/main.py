@@ -353,6 +353,7 @@ def _build_copy_trader(
         config=CopierConfig(
             private_key=private_key,
             funder=funder,
+            signature_type=int(ct_cfg.get("signature_type", 2)),
             sizing_mode=ct_cfg.get("sizing_mode", "fixed"),
             fixed_usdc=float(ct_cfg.get("fixed_usdc", 50.0)),
             reference_trade_usdc=float(ct_cfg.get("reference_trade_usdc", 50.0)),

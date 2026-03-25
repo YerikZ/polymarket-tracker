@@ -59,6 +59,7 @@ class CopierConfig:
     private_key: str
     funder: str                          # proxy wallet address (same as your Polymarket address)
     chain_id: int = 137                  # Polygon mainnet
+    signature_type: int = 2              # 0=EOA, 1=POLY_PROXY, 2=POLY_GNOSIS_SAFE (default for Polymarket proxy wallets)
 
     # Sizing mode — exactly one should drive the spend amount
     sizing_mode: str = "fixed"           # "fixed" | "pct_balance" | "mirror_pct"
@@ -225,7 +226,7 @@ class CopyTrader:
                 "https://clob.polymarket.com",
                 key=self._cfg.private_key,
                 chain_id=self._cfg.chain_id,
-                signature_type=1,
+                signature_type=self._cfg.signature_type,
                 funder=self._cfg.funder,
             )
             self._clob.set_api_creds(self._clob.create_or_derive_api_creds())
