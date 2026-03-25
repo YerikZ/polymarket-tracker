@@ -174,22 +174,30 @@ class CopyTrader:
                        f"Spent today: ${spent_today:.2f}, remaining: ${remaining:.2f}",
             )
 
-        # Cap per trade
-        spend = min(spend, self._cfg.max_trade_usdc)
-
         order_price = round(signal.price + self._cfg.slippage, 4)
         order_price = min(order_price, 0.99)  # price can't exceed 0.99 on Polymarket
+
+        # Bump spend up to meet the 5-share minimum if needed, then cap at max_trade_usdc
+        min_required = round(self._cfg.min_shares * order_price, 2)
+        if spend < min_required:
+            logger.debug(
+                "Spend $%.2f below min-shares floor $%.2f — bumping up",
+                spend, min_required,
+            )
+            spend = min_required
+
+        # Cap per trade
+        spend = min(spend, self._cfg.max_trade_usdc)
         shares = round(spend / order_price, 2)
 
-        # Polymarket CLOB rejects orders below 5 shares
+        # If max_trade_usdc is too low to buy even the minimum shares, skip
         if shares < self._cfg.min_shares:
-            min_spend = round(self._cfg.min_shares * order_price, 2)
             return CopyResult(
                 signal=signal, status="skipped",
                 reason=(
-                    f"Order too small: {shares:.2f} shares < minimum {self._cfg.min_shares:.0f} shares. "
-                    f"Need at least ${min_spend:.2f} USDC at this price (${order_price:.4f}/share). "
-                    f"Increase fixed_usdc or reference_trade_usdc in config."
+                    f"max_trade_usdc (${self._cfg.max_trade_usdc:.2f}) too low to buy "
+                    f"{self._cfg.min_shares:.0f} shares @ ${order_price:.4f}/share "
+                    f"(need ${min_required:.2f}). Raise max_trade_usdc in config."
                 ),
             )
 
