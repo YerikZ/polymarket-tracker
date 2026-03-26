@@ -71,6 +71,10 @@ class SignalMonitor:
                         self._storage.append_alert(sig)
                         on_signal(sig)
             except Exception as exc:
+                # Let sentinel exceptions (e.g. DailyLimitReached) propagate up
+                from .copier import DailyLimitReached
+                if isinstance(exc, DailyLimitReached):
+                    raise
                 logger.error("Error during poll: %s", exc)
 
             logger.info("Sleeping %ds until next poll…", self._interval)

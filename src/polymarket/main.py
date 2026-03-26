@@ -455,17 +455,19 @@ def _cmd_watch_poll(
     cfg: dict,
     copy_trader: CopyTrader | None,
 ) -> None:
+    # CLI --interval overrides config; config overrides hardcoded default (300s)
+    poll_interval = args.interval if args.interval != 300 else int(cfg.get("poll_interval", args.interval))
     monitor = SignalMonitor(
         client=client,
         scanner=scanner,
         storage=storage,
-        poll_interval=args.interval,
+        poll_interval=poll_interval,
         min_position_usdc=args.min_size,
         max_signal_age=cfg.get("max_signal_age", 3600),
     )
     console.print(Panel(
         f"Tracking [bold cyan]{scanner._top_n}[/bold cyan] wallets  |  "
-        f"poll every [bold]{args.interval}s[/bold]  |  "
+        f"poll every [bold]{poll_interval}s[/bold]  |  "
         f"min size [bold]${args.min_size:.0f}[/bold]  |  "
         "[dim]Ctrl-C to stop[/dim]"
         + _copy_info_line(copy_trader),
