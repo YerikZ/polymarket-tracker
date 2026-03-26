@@ -71,7 +71,7 @@ class CopierConfig:
     # Safety limits
     max_trade_usdc: float = 500.0        # hard cap per trade
     daily_limit_usdc: float = 1000.0     # total cap for today
-    min_shares: float = 5.0              # Polymarket CLOB minimum order size (shares, not USDC)
+    min_order_size_cap: float = 10.0     # skip if market's min_order_size exceeds this (avoids forced large buys)
 
     # Execution
     dry_run: bool = True                 # True = simulate only, never submit
@@ -187,41 +187,36 @@ class CopyTrader:
         order_price = min(order_price, 0.99)  # price can't exceed 0.99 on Polymarket
 
         # Fetch the per-market minimum order size from the CLOB order book.
-        # This is market-specific (commonly 5 but can differ) — hardcoding would
-        # cause silent rejections on markets with different minimums.
-        min_shares = self._cfg.min_shares  # fallback if fetch fails
+        min_order_size = 1.0  # safe default if fetch fails
         if not self._cfg.dry_run:
             try:
                 book = self._get_client().get_order_book(signal.token_id)
                 if book.min_order_size:
-                    min_shares = float(book.min_order_size)
-                    logger.debug("Market min_order_size: %.2f shares", min_shares)
+                    min_order_size = float(book.min_order_size)
+                    logger.debug("Market min_order_size: %.2f shares", min_order_size)
             except Exception as exc:
-                logger.debug("Could not fetch order book min size, using default %.0f: %s", min_shares, exc)
+                logger.debug("Could not fetch order book min size: %s", exc)
 
-        # Bump spend up to meet the minimum if needed, then cap at max_trade_usdc
-        min_required = round(min_shares * order_price, 2)
-        if spend < min_required:
-            logger.debug(
-                "Spend $%.2f below min-shares floor $%.2f — bumping up",
-                spend, min_required,
+        # Skip if the market's minimum is above our cap (prevents forced large buys)
+        if min_order_size > self._cfg.min_order_size_cap:
+            return CopyResult(
+                signal=signal, status="skipped",
+                reason=(
+                    f"Market requires {min_order_size:.0f} shares minimum, "
+                    f"exceeds cap of {self._cfg.min_order_size_cap:.0f}. "
+                    f"Raise min_order_size_cap in config to allow."
+                ),
             )
+
+        # Bump spend up to meet the market minimum if needed, then cap at max_trade_usdc
+        min_required = round(min_order_size * order_price, 2)
+        if spend < min_required:
+            logger.debug("Spend $%.2f below min floor $%.2f — bumping up", spend, min_required)
             spend = min_required
 
         # Cap per trade
         spend = min(spend, self._cfg.max_trade_usdc)
         shares = round(spend / order_price, 2)
-
-        # If max_trade_usdc is too low to buy even the minimum shares, skip
-        if shares < min_shares:
-            return CopyResult(
-                signal=signal, status="skipped",
-                reason=(
-                    f"max_trade_usdc (${self._cfg.max_trade_usdc:.2f}) too low to buy "
-                    f"{min_shares:.0f} shares @ ${order_price:.4f}/share "
-                    f"(need ${min_required:.2f}). Raise max_trade_usdc in config."
-                ),
-            )
 
         if self._cfg.dry_run:
             logger.info(

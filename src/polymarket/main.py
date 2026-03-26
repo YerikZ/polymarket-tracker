@@ -361,7 +361,7 @@ def _build_copy_trader(
             mirror_pct=float(ct_cfg.get("mirror_pct", 0.01)),
             max_trade_usdc=float(ct_cfg.get("max_trade_usdc", 500.0)),
             daily_limit_usdc=float(ct_cfg.get("daily_limit_usdc", 1000.0)),
-            min_shares=float(ct_cfg.get("min_shares", 5.0)),
+            min_order_size_cap=float(ct_cfg.get("min_order_size_cap", 10.0)),
             dry_run=dry_run,
             slippage=float(ct_cfg.get("slippage", 0.01)),
             blocked_keywords=list(ct_cfg.get("blocked_keywords", [])),
