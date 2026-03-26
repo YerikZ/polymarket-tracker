@@ -186,8 +186,21 @@ class CopyTrader:
         order_price = round(signal.price + self._cfg.slippage, 4)
         order_price = min(order_price, 0.99)  # price can't exceed 0.99 on Polymarket
 
-        # Bump spend up to meet the 5-share minimum if needed, then cap at max_trade_usdc
-        min_required = round(self._cfg.min_shares * order_price, 2)
+        # Fetch the per-market minimum order size from the CLOB order book.
+        # This is market-specific (commonly 5 but can differ) — hardcoding would
+        # cause silent rejections on markets with different minimums.
+        min_shares = self._cfg.min_shares  # fallback if fetch fails
+        if not self._cfg.dry_run:
+            try:
+                book = self._get_client().get_order_book(signal.token_id)
+                if book.min_order_size:
+                    min_shares = float(book.min_order_size)
+                    logger.debug("Market min_order_size: %.2f shares", min_shares)
+            except Exception as exc:
+                logger.debug("Could not fetch order book min size, using default %.0f: %s", min_shares, exc)
+
+        # Bump spend up to meet the minimum if needed, then cap at max_trade_usdc
+        min_required = round(min_shares * order_price, 2)
         if spend < min_required:
             logger.debug(
                 "Spend $%.2f below min-shares floor $%.2f — bumping up",
@@ -200,12 +213,12 @@ class CopyTrader:
         shares = round(spend / order_price, 2)
 
         # If max_trade_usdc is too low to buy even the minimum shares, skip
-        if shares < self._cfg.min_shares:
+        if shares < min_shares:
             return CopyResult(
                 signal=signal, status="skipped",
                 reason=(
                     f"max_trade_usdc (${self._cfg.max_trade_usdc:.2f}) too low to buy "
-                    f"{self._cfg.min_shares:.0f} shares @ ${order_price:.4f}/share "
+                    f"{min_shares:.0f} shares @ ${order_price:.4f}/share "
                     f"(need ${min_required:.2f}). Raise max_trade_usdc in config."
                 ),
             )
