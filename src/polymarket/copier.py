@@ -87,6 +87,10 @@ class CopierConfig:
     score_scale_size: bool = True        # scale position size by wallet's copy_size_pct
 
 
+class DailyLimitReached(Exception):
+    """Raised when the daily spend cap is hit — signals the watch loop to stop."""
+
+
 class CopyTrader:
     def __init__(self, config: CopierConfig, storage: Storage):
         self._cfg = config
@@ -100,6 +104,11 @@ class CopyTrader:
         """Called by cmd_watch after computing/refreshing wallet scores."""
         self._scores = scores
         logger.info("Score cache updated for %d wallets.", len(scores))
+
+    def is_daily_limit_reached(self) -> bool:
+        """Return True if today's spend has hit or exceeded the daily cap."""
+        spent = self._storage.get_daily_spend(date.today().isoformat())
+        return spent >= self._cfg.daily_limit_usdc
 
     # ------------------------------------------------------------------
     # Public API

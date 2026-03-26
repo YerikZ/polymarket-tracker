@@ -12,7 +12,7 @@ from rich import box
 from . import config as cfg_module
 from . import db
 from .client import PolymarketClient
-from .copier import CopierConfig, CopyTrader
+from .copier import CopierConfig, CopyTrader, DailyLimitReached
 from .models import CopyResult, Signal, Wallet, WalletScore, WalletStats
 from .storage import Storage
 from .scanner import LeaderboardScanner
@@ -476,9 +476,19 @@ def _cmd_watch_poll(
     def on_signal(sig: Signal) -> None:
         result = copy_trader.copy(sig) if copy_trader else None
         render_signal(sig, result)
+        if copy_trader and copy_trader.is_daily_limit_reached():
+            spent = copy_trader._storage.get_daily_spend(__import__("datetime").date.today().isoformat())
+            raise DailyLimitReached(
+                f"Daily spend cap of ${copy_trader._cfg.daily_limit_usdc:.2f} reached "
+                f"(spent ${spent:.2f} today). Stopping watch."
+            )
 
     try:
         monitor.run(on_signal=on_signal, force_refresh=getattr(args, "refresh", False))
+    except DailyLimitReached as e:
+        console.print(f"\n[bold yellow]⚠ Daily limit reached — watch stopped.[/bold yellow]\n  {e}")
+        alerts = storage.get_alerts(limit=1000)
+        console.print(f"  {len(alerts)} total alerts saved.")
     except KeyboardInterrupt:
         alerts = storage.get_alerts(limit=1000)
         console.print(f"\n[bold]Stopped.[/bold] {len(alerts)} total alerts saved.")
@@ -519,12 +529,24 @@ async def _cmd_watch_stream(
         border_style="green",
     ))
 
+    stream_task: asyncio.Task | None = None
+
     async def on_signal(sig: Signal) -> None:
         result = await asyncio.to_thread(copy_trader.copy, sig) if copy_trader else None
         render_signal(sig, result)
+        if copy_trader and copy_trader.is_daily_limit_reached():
+            from datetime import date as _date
+            spent = copy_trader._storage.get_daily_spend(_date.today().isoformat())
+            console.print(
+                f"\n[bold yellow]⚠ Daily spend cap of ${copy_trader._cfg.daily_limit_usdc:.2f} reached "
+                f"(spent ${spent:.2f} today) — stopping watch.[/bold yellow]"
+            )
+            if stream_task and not stream_task.done():
+                stream_task.cancel()
 
     try:
-        await stream.run(on_signal=on_signal)
+        stream_task = asyncio.create_task(stream.run(on_signal=on_signal))
+        await stream_task
     except asyncio.CancelledError:
         pass
     except KeyboardInterrupt:
