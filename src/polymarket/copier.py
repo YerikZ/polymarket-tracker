@@ -87,16 +87,13 @@ class CopierConfig:
     score_scale_size: bool = True        # scale position size by wallet's copy_size_pct
 
 
-class DailyLimitReached(Exception):
-    """Raised when the daily spend cap is hit — signals the watch loop to stop."""
-
-
 class CopyTrader:
     def __init__(self, config: CopierConfig, storage: Storage):
         self._cfg = config
         self._storage = storage
         self._clob: object | None = None  # initialised lazily on first trade
         self._scores: dict[str, WalletScore] = {}  # address → latest score
+        self._cap_hit = False             # True once daily cap reached in live mode
         # Pre-expand category names → keyword lists once at startup
         self._blocked = _expand_keywords(config.blocked_keywords)
 
@@ -176,12 +173,23 @@ class CopyTrader:
         # Check daily limit
         spent_today = self._storage.get_daily_spend(date.today().isoformat())
         if spent_today + spend > self._cfg.daily_limit_usdc:
-            remaining = self._cfg.daily_limit_usdc - spent_today
-            return CopyResult(
-                signal=signal, status="skipped",
-                reason=f"Daily limit reached (${self._cfg.daily_limit_usdc:.0f}). "
-                       f"Spent today: ${spent_today:.2f}, remaining: ${remaining:.2f}",
-            )
+            remaining = max(0.0, self._cfg.daily_limit_usdc - spent_today)
+            if self._cfg.dry_run:
+                # Dry-run: just skip, nothing to fall back to
+                return CopyResult(
+                    signal=signal, status="skipped",
+                    reason=f"Daily limit reached (${self._cfg.daily_limit_usdc:.0f}). "
+                           f"Spent today: ${spent_today:.2f}, remaining: ${remaining:.2f}",
+                )
+            # Live mode: switch to shadow dry-run and keep watching
+            if not self._cap_hit:
+                self._cap_hit = True
+                logger.warning(
+                    "Daily cap of $%.0f reached (spent $%.2f). "
+                    "Switching to shadow dry-run — signals will be recorded but no real orders placed.",
+                    self._cfg.daily_limit_usdc, spent_today,
+                )
+            # Fall through with _cap_hit=True — handled in execution branch below
 
         order_price = round(signal.price + self._cfg.slippage, 4)
         order_price = min(order_price, 0.99)  # price can't exceed 0.99 on Polymarket
@@ -218,10 +226,11 @@ class CopyTrader:
         spend = min(spend, self._cfg.max_trade_usdc)
         shares = round(spend / order_price, 2)
 
-        if self._cfg.dry_run:
+        if self._cfg.dry_run or self._cap_hit:
+            label = "SHADOW DRY-RUN (cap hit)" if self._cap_hit else "DRY RUN"
             logger.info(
-                "[DRY RUN] Would BUY %.2f shares of %s @ $%.4f (≈$%.2f USDC)",
-                shares, signal.market_title[:40], order_price, spend,
+                "[%s] Would BUY %.2f shares of %s @ $%.4f (≈$%.2f USDC)",
+                label, shares, signal.market_title[:40], order_price, spend,
             )
             self._storage.append_paper_position({
                 "condition_id": signal.condition_id,
@@ -235,13 +244,15 @@ class CopyTrader:
                 "wallet_address": signal.wallet_address,
                 "username": signal.username,
                 "wallet_rank": signal.wallet_rank,
-                "is_dry_run": True,
+                "is_dry_run": True,  # shadow orders are always marked dry-run
             })
-            # Bug fix: track dry-run spend so the daily limit is enforced for simulated trades too
-            self._storage.record_daily_spend(date.today().isoformat(), spend)
+            if self._cfg.dry_run:
+                # Only count dry-run spend toward daily limit (shadow orders don't count — cap already hit)
+                self._storage.record_daily_spend(date.today().isoformat(), spend)
+            status_label = "shadow" if self._cap_hit else "dry_run"
             return CopyResult(
-                signal=signal, status="dry_run",
-                reason=f"Dry run: would place BUY {shares:.2f} shares @ ${order_price:.4f} (≈${spend:.2f} USDC)",
+                signal=signal, status=status_label,
+                reason=f"{label}: would place BUY {shares:.2f} shares @ ${order_price:.4f} (≈${spend:.2f} USDC)",
                 spend_usdc=spend,
                 price=order_price,
             )

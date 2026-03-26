@@ -272,17 +272,18 @@ def render_signal(sig: Signal, copy_result: CopyResult | None = None) -> None:
         f"  [bold]Tx[/bold]       [dim]{sig.transaction_hash[:18]}…[/dim]"
     )
     if copy_result:
-        status_colors = {"placed": "green", "dry_run": "yellow", "skipped": "dim", "failed": "red"}
+        status_colors = {"placed": "green", "dry_run": "yellow", "shadow": "magenta", "skipped": "dim", "failed": "red"}
         color = status_colors.get(copy_result.status, "white")
-        icon = {"placed": "✓", "dry_run": "~", "skipped": "–", "failed": "✗"}.get(copy_result.status, "?")
+        icon = {"placed": "✓", "dry_run": "~", "shadow": "◎", "skipped": "–", "failed": "✗"}.get(copy_result.status, "?")
         content += f"\n\n  [bold]Copy[/bold]     [{color}]{icon} {copy_result.status.upper()}[/{color}]  {copy_result.reason}"
 
-    border = "green" if not copy_result or copy_result.status in ("placed", "dry_run") else "dim"
+    border = "green" if not copy_result or copy_result.status in ("placed", "dry_run", "shadow") else "dim"
     title = "[bold green]COPY-TRADE ALERT[/bold green]" if not copy_result else {
         "placed": "[bold green]ORDER PLACED[/bold green]",
         "dry_run": "[bold yellow]DRY RUN — WOULD PLACE[/bold yellow]",
+        "shadow":  "[bold magenta]SHADOW (cap hit) — WOULD PLACE[/bold magenta]",
         "skipped": "[bold dim]SIGNAL (copy skipped)[/bold dim]",
-        "failed": "[bold red]ORDER FAILED[/bold red]",
+        "failed":  "[bold red]ORDER FAILED[/bold red]",
     }.get(copy_result.status, "[bold]SIGNAL[/bold]")
 
     console.print(f"\n[dim]{ts}[/dim]  [bold yellow]NEW SIGNAL DETECTED[/bold yellow]")
