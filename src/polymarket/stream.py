@@ -205,7 +205,10 @@ class PolymarketStream:
                 usdc   = mamt / USDC_DECIMALS
                 shares = tamt / TOKEN_DECIMALS
 
-        if side != "BUY" or usdc < self._min_size:
+        if side not in ("BUY", "SELL"):
+            return
+        # Apply min-size filter only to buys; sells always propagate
+        if side == "BUY" and usdc < self._min_size:
             return
 
         price  = round(usdc / shares, 6) if shares > 0 else 0.0

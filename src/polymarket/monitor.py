@@ -129,13 +129,13 @@ class SignalMonitor:
             if ts and ts < cutoff_ts:
                 continue
 
-            # Only emit for BUY trades above the size threshold
             side = trade.get("side", "").upper()
             usdc_size = float(trade.get("usdcSize") or 0)
 
-            if side != "BUY":
+            if side not in ("BUY", "SELL"):
                 continue
-            if usdc_size < self._min_size:
+            # Apply min-size filter only to buys; sells always propagate
+            if side == "BUY" and usdc_size < self._min_size:
                 continue
 
             condition_id = trade.get("conditionId", "")

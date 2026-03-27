@@ -119,6 +119,9 @@ class CopyTrader:
                 reason="No token_id in signal — cannot place order without ERC-1155 asset ID",
             )
 
+        if signal.side == "SELL":
+            return self._copy_sell(signal)
+
         # Skip resolved markets — price is 0 (lost) or 1 (won), nothing left to trade
         if signal.price <= 0.01 or signal.price >= 0.97:
             return CopyResult(
@@ -260,6 +263,51 @@ class CopyTrader:
         # Live execution
         return self._place_order(signal, shares, order_price, spend)
 
+    def _copy_sell(self, signal: Signal) -> CopyResult:
+        """Close our matching position when a tracked wallet sells."""
+        pos = self._storage.get_open_position(signal.condition_id, signal.token_id)
+        if pos is None:
+            return CopyResult(
+                signal=signal, status="skipped",
+                reason="No open position to sell — we never bought this market",
+            )
+
+        shares     = float(pos["shares"])
+        exit_price = round(max(signal.price - self._cfg.slippage, 0.01), 4)
+        proceeds   = round(shares * exit_price, 2)
+        cost       = float(pos["spend_usdc"])
+        pnl        = round(proceeds - cost, 2)
+
+        label = "DRY RUN SELL" if self._cfg.dry_run else "SELL"
+        logger.info(
+            "[%s] Closing %.2f shares of %s @ $%.4f → proceeds $%.2f  P&L %+.2f",
+            label, shares, signal.market_title[:40], exit_price, proceeds, pnl,
+        )
+
+        # Close the position in DB
+        self._storage.close_paper_position(pos["id"], exit_price, proceeds)
+
+        # Credit proceeds back to daily spend so headroom is restored for new buys.
+        # record_daily_spend accumulates; passing a negative value reduces the total.
+        if proceeds > 0:
+            self._storage.record_daily_spend(date.today().isoformat(), -proceeds)
+            logger.info(
+                "Daily spend credited $%.2f from sell proceeds (new headroom: $%.2f)",
+                proceeds,
+                max(0.0, self._cfg.daily_limit_usdc - self._storage.get_daily_spend(date.today().isoformat())),
+            )
+
+        if self._cfg.dry_run or self._cap_hit:
+            return CopyResult(
+                signal=signal,
+                status="dry_run" if self._cfg.dry_run else "shadow",
+                reason=f"{label}: closed {shares:.2f} shares @ ${exit_price:.4f} → ${proceeds:.2f} (P&L {pnl:+.2f})",
+                spend_usdc=-proceeds,   # negative = credit
+                price=exit_price,
+            )
+
+        return self._place_sell_order(signal, pos, shares, exit_price, proceeds)
+
     def get_balance(self) -> float:
         """Return USDC balance (public helper for CLI)."""
         return self._get_balance()
@@ -380,4 +428,45 @@ class CopyTrader:
 
         except Exception as exc:
             logger.error("Order placement exception: %s", exc)
+            return CopyResult(signal=signal, status="failed", reason=str(exc))
+
+    def _place_sell_order(self, signal: Signal, pos: dict, shares: float, price: float, proceeds: float) -> CopyResult:
+        """Place a live SELL order on the CLOB for an existing position."""
+        try:
+            ClobClient, OrderArgs, OrderType, _, SELL, _, _ = _clob_imports()
+            client = self._get_client()
+
+            order_args = OrderArgs(
+                token_id=signal.token_id,
+                price=price,
+                size=shares,
+                side=SELL,
+            )
+            signed = client.create_order(order_args)
+            resp   = client.post_order(signed, OrderType.GTC)
+
+            if resp.get("success") or resp.get("orderID"):
+                order_id = resp.get("orderID", "")
+                logger.info(
+                    "Sell order placed: %s — SELL %.2f shares @ $%.4f (≈$%.2f USDC)",
+                    order_id, shares, price, proceeds,
+                )
+                # Proceeds already credited to daily_spend in _copy_sell
+                return CopyResult(
+                    signal=signal, status="placed",
+                    reason=f"SELL {shares:.2f} shares @ ${price:.4f} (≈${proceeds:.2f} USDC)",
+                    order_id=order_id,
+                    spend_usdc=-proceeds,
+                    price=price,
+                )
+            else:
+                err = resp.get("errorMsg") or str(resp)
+                logger.error("Sell order rejected: %s", err)
+                # Undo the daily spend credit since the order failed
+                self._storage.record_daily_spend(date.today().isoformat(), proceeds)
+                return CopyResult(signal=signal, status="failed", reason=f"API rejected: {err}")
+
+        except Exception as exc:
+            logger.error("Sell order exception: %s", exc)
+            self._storage.record_daily_spend(date.today().isoformat(), proceeds)
             return CopyResult(signal=signal, status="failed", reason=str(exc))

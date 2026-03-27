@@ -171,13 +171,47 @@ class Storage:
                 cur.execute(
                     """
                     SELECT 1 FROM paper_positions
-                    WHERE (condition_id <> '' AND condition_id = %s)
-                       OR (token_id     <> '' AND token_id     = %s)
+                    WHERE position_status = 'open'
+                      AND ((condition_id <> '' AND condition_id = %s)
+                        OR (token_id     <> '' AND token_id     = %s))
                     LIMIT 1
                     """,
                     (condition_id, token_id),
                 )
                 return cur.fetchone() is not None
+
+    def get_open_position(self, condition_id: str, token_id: str) -> dict | None:
+        """Return the open paper position for this market, or None if not found."""
+        with db.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT * FROM paper_positions
+                    WHERE position_status = 'open'
+                      AND ((condition_id <> '' AND condition_id = %s)
+                        OR (token_id     <> '' AND token_id     = %s))
+                    LIMIT 1
+                    """,
+                    (condition_id, token_id),
+                )
+                row = cur.fetchone()
+                return _row_to_dict(row) if row else None
+
+    def close_paper_position(self, position_id: int, exit_price: float, exit_usdc: float) -> None:
+        """Mark a position as manually closed (sell signal), recording exit details."""
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE paper_positions
+                       SET position_status     = 'closed',
+                           resolution_outcome  = 'sold',
+                           current_price       = %s,
+                           current_value_usdc  = %s
+                     WHERE id = %s
+                    """,
+                    (exit_price, exit_usdc, position_id),
+                )
 
     def append_paper_position(self, pos: dict) -> None:
         with db.get_conn() as conn:
