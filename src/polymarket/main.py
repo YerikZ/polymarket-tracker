@@ -430,7 +430,7 @@ def cmd_watch(
             _compute_and_push_scores(wallets, analyzer, copy_trader)
 
     if args.poll:
-        _cmd_watch_poll(args, client, scanner, storage, copy_trader)
+        _cmd_watch_poll(args, client, scanner, storage, cfg, copy_trader)
     else:
         wss_url = cfg.get("polygon_wss", "").strip()
         if not wss_url:
