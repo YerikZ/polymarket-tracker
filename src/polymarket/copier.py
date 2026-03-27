@@ -93,7 +93,6 @@ class CopyTrader:
         self._storage = storage
         self._clob: object | None = None  # initialised lazily on first trade
         self._scores: dict[str, WalletScore] = {}  # address → latest score
-        self._cap_hit = False             # True once daily cap reached in live mode
         # Pre-expand category names → keyword lists once at startup
         self._blocked = _expand_keywords(config.blocked_keywords)
 
@@ -173,26 +172,22 @@ class CopyTrader:
         if spend <= 0:
             return CopyResult(signal=signal, status="skipped", reason="Computed spend is $0")
 
-        # Check daily limit
+        # Check daily limit — evaluated live so sell credits can restore live mode
         spent_today = self._storage.get_daily_spend(date.today().isoformat())
+        cap_hit = not self._cfg.dry_run and (spent_today + spend > self._cfg.daily_limit_usdc)
         if spent_today + spend > self._cfg.daily_limit_usdc:
             remaining = max(0.0, self._cfg.daily_limit_usdc - spent_today)
             if self._cfg.dry_run:
-                # Dry-run: just skip, nothing to fall back to
                 return CopyResult(
                     signal=signal, status="skipped",
                     reason=f"Daily limit reached (${self._cfg.daily_limit_usdc:.0f}). "
                            f"Spent today: ${spent_today:.2f}, remaining: ${remaining:.2f}",
                 )
-            # Live mode: switch to shadow dry-run and keep watching
-            if not self._cap_hit:
-                self._cap_hit = True
-                logger.warning(
-                    "Daily cap of $%.0f reached (spent $%.2f). "
-                    "Switching to shadow dry-run — signals will be recorded but no real orders placed.",
-                    self._cfg.daily_limit_usdc, spent_today,
-                )
-            # Fall through with _cap_hit=True — handled in execution branch below
+            logger.warning(
+                "Daily cap of $%.0f reached (spent $%.2f). "
+                "Switching to shadow dry-run — signals will be recorded but no real orders placed.",
+                self._cfg.daily_limit_usdc, spent_today,
+            )
 
         order_price = round(signal.price + self._cfg.slippage, 4)
         order_price = min(order_price, 0.99)  # price can't exceed 0.99 on Polymarket
@@ -229,8 +224,8 @@ class CopyTrader:
         spend = min(spend, self._cfg.max_trade_usdc)
         shares = round(spend / order_price, 2)
 
-        if self._cfg.dry_run or self._cap_hit:
-            label = "SHADOW DRY-RUN (cap hit)" if self._cap_hit else "DRY RUN"
+        if self._cfg.dry_run or cap_hit:
+            label = "SHADOW DRY-RUN (cap hit)" if cap_hit else "DRY RUN"
             logger.info(
                 "[%s] Would BUY %.2f shares of %s @ $%.4f (≈$%.2f USDC)",
                 label, shares, signal.market_title[:40], order_price, spend,
@@ -252,7 +247,7 @@ class CopyTrader:
             if self._cfg.dry_run:
                 # Only count dry-run spend toward daily limit (shadow orders don't count — cap already hit)
                 self._storage.record_daily_spend(date.today().isoformat(), spend)
-            status_label = "shadow" if self._cap_hit else "dry_run"
+            status_label = "shadow" if cap_hit else "dry_run"
             return CopyResult(
                 signal=signal, status=status_label,
                 reason=f"{label}: would place BUY {shares:.2f} shares @ ${order_price:.4f} (≈${spend:.2f} USDC)",
@@ -289,9 +284,11 @@ class CopyTrader:
 
         # Only credit proceeds to daily_spend for real live positions.
         # dry_run positions record their spend, so refund it on close.
-        # Shadow positions (_cap_hit) never recorded spend, so no refund.
+        # Shadow positions (is_dry_run=True opened during cap) never recorded spend — no refund.
+        # Real dry-run and live positions recorded spend on open, so refund on close.
         pos_is_dry_run = pos.get("is_dry_run", True)
-        if proceeds > 0 and (not pos_is_dry_run or (self._cfg.dry_run and not self._cap_hit)):
+        pos_is_shadow  = pos_is_dry_run and not self._cfg.dry_run
+        if proceeds > 0 and not pos_is_shadow:
             self._storage.record_daily_spend(date.today().isoformat(), -proceeds)
             logger.info(
                 "Daily spend credited $%.2f from sell proceeds (new headroom: $%.2f)",
@@ -299,7 +296,10 @@ class CopyTrader:
                 max(0.0, self._cfg.daily_limit_usdc - self._storage.get_daily_spend(date.today().isoformat())),
             )
 
-        if self._cfg.dry_run or self._cap_hit:
+        # Re-evaluate cap live so restored headroom can bring us back to live mode
+        spent_today = self._storage.get_daily_spend(date.today().isoformat())
+        cap_hit = not self._cfg.dry_run and spent_today >= self._cfg.daily_limit_usdc
+        if self._cfg.dry_run or cap_hit:
             return CopyResult(
                 signal=signal,
                 status="dry_run" if self._cfg.dry_run else "shadow",

@@ -539,15 +539,6 @@ async def _cmd_watch_stream(
     async def on_signal(sig: Signal) -> None:
         result = await asyncio.to_thread(copy_trader.copy, sig) if copy_trader else None
         render_signal(sig, result)
-        if copy_trader and copy_trader.is_daily_limit_reached():
-            from datetime import date as _date
-            spent = copy_trader._storage.get_daily_spend(_date.today().isoformat())
-            console.print(
-                f"\n[bold yellow]⚠ Daily spend cap of ${copy_trader._cfg.daily_limit_usdc:.2f} reached "
-                f"(spent ${spent:.2f} today) — stopping watch.[/bold yellow]"
-            )
-            if stream_task and not stream_task.done():
-                stream_task.cancel()
 
     try:
         stream_task = asyncio.create_task(stream.run(on_signal=on_signal))
