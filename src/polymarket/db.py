@@ -99,6 +99,8 @@ ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS is_dry_run         BOOLEAN 
 ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS position_status    TEXT    NOT NULL DEFAULT 'open';
 ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS resolution_outcome TEXT    NOT NULL DEFAULT '';
 ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS market_closed      BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS current_price      NUMERIC(18,6);
+ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS current_value_usdc NUMERIC(18,6);
 
 CREATE INDEX IF NOT EXISTS idx_paper_condition ON paper_positions (condition_id)
     WHERE condition_id <> '';
