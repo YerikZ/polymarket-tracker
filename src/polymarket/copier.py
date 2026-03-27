@@ -287,9 +287,11 @@ class CopyTrader:
         # Close the position in DB
         self._storage.close_paper_position(pos["id"], exit_price, proceeds)
 
-        # Credit proceeds back to daily spend so headroom is restored for new buys.
-        # record_daily_spend accumulates; passing a negative value reduces the total.
-        if proceeds > 0:
+        # Only credit proceeds to daily_spend for real live positions.
+        # dry_run positions record their spend, so refund it on close.
+        # Shadow positions (_cap_hit) never recorded spend, so no refund.
+        pos_is_dry_run = pos.get("is_dry_run", True)
+        if proceeds > 0 and (not pos_is_dry_run or (self._cfg.dry_run and not self._cap_hit)):
             self._storage.record_daily_spend(date.today().isoformat(), -proceeds)
             logger.info(
                 "Daily spend credited $%.2f from sell proceeds (new headroom: $%.2f)",
