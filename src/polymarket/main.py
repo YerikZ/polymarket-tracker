@@ -524,6 +524,18 @@ async def _cmd_watch_stream(
 
     stream_task: asyncio.Task | None = None
 
+    async def _midnight_stopper() -> None:
+        """Cancel the stream task at 23:59:59 so the daily cap resets cleanly."""
+        from datetime import datetime as _dt
+        now = _dt.now()
+        midnight = now.replace(hour=23, minute=59, second=59, microsecond=0)
+        secs = (midnight - now).total_seconds()
+        if secs > 0:
+            await asyncio.sleep(secs)
+        console.print("\n[bold yellow]⏰ 23:59:59 — stopping watch for the day.[/bold yellow]")
+        if stream_task and not stream_task.done():
+            stream_task.cancel()
+
     async def on_signal(sig: Signal) -> None:
         result = await asyncio.to_thread(copy_trader.copy, sig) if copy_trader else None
         render_signal(sig, result)
@@ -539,6 +551,7 @@ async def _cmd_watch_stream(
 
     try:
         stream_task = asyncio.create_task(stream.run(on_signal=on_signal))
+        asyncio.create_task(_midnight_stopper())
         await stream_task
     except asyncio.CancelledError:
         pass
