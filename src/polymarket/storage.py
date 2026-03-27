@@ -207,7 +207,8 @@ class Storage:
                        SET position_status     = 'closed',
                            resolution_outcome  = 'sold',
                            current_price       = %s,
-                           current_value_usdc  = %s
+                           current_value_usdc  = %s,
+                           closed_at           = NOW()
                      WHERE id = %s
                     """,
                     (exit_price, exit_usdc, position_id),
