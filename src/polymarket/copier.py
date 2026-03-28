@@ -273,7 +273,8 @@ class CopyTrader:
         cost       = float(pos["spend_usdc"])
         pnl        = round(proceeds - cost, 2)
 
-        label = "DRY RUN SELL" if self._cfg.dry_run else "SELL"
+        pos_is_dry_run = pos.get("is_dry_run", True)
+        label = "DRY RUN SELL" if pos_is_dry_run else "SELL"
         logger.info(
             "[%s] Closing %.2f shares of %s @ $%.4f → proceeds $%.2f  P&L %+.2f",
             label, shares, signal.market_title[:40], exit_price, proceeds, pnl,
@@ -285,7 +286,6 @@ class CopyTrader:
         # Refund the original spend (not proceeds) back to the daily counter.
         # This restores exactly the headroom that was consumed when we bought.
         # Shadow positions (is_dry_run=True while in live mode) never charged daily_spend — no refund.
-        pos_is_dry_run = pos.get("is_dry_run", True)
         pos_is_shadow  = pos_is_dry_run and not self._cfg.dry_run
         refund = float(pos.get("spend_usdc") or 0)
         if refund > 0 and not pos_is_shadow:
@@ -299,10 +299,10 @@ class CopyTrader:
         # Re-evaluate cap live so restored headroom can bring us back to live mode
         spent_today = self._storage.get_daily_spend(date.today().isoformat())
         cap_hit = not self._cfg.dry_run and spent_today >= self._cfg.daily_limit_usdc
-        if self._cfg.dry_run or cap_hit:
+        if pos_is_dry_run or cap_hit:
             return CopyResult(
                 signal=signal,
-                status="dry_run" if self._cfg.dry_run else "shadow",
+                status="dry_run" if pos_is_dry_run else "shadow",
                 reason=f"{label}: closed {shares:.2f} shares @ ${exit_price:.4f} → ${proceeds:.2f} (P&L {pnl:+.2f})",
                 spend_usdc=-proceeds,   # negative = credit
                 price=exit_price,
