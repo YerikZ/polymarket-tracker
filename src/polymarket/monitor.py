@@ -1,6 +1,6 @@
 import logging
 import time
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone
 from typing import Callable
 
 from .client import PolymarketClient
@@ -73,22 +73,8 @@ class SignalMonitor:
             except Exception as exc:
                 logger.error("Error during poll: %s", exc)
 
-            # Auto-stop at 23:59:59 — daily cap resets at midnight
-            now = datetime.now()
-            midnight = now.replace(hour=23, minute=59, second=59, microsecond=0)
-            secs_until_midnight = (midnight - now).total_seconds()
-            if secs_until_midnight <= 0:
-                logger.info("23:59:59 reached — stopping watch for the day.")
-                break
-
-            sleep_secs = min(self._interval, int(secs_until_midnight))
-            logger.info("Sleeping %ds until next poll…", sleep_secs)
-            time.sleep(sleep_secs)
-
-            # Re-check after sleep in case we woke right at midnight
-            if datetime.now() >= now.replace(hour=23, minute=59, second=59, microsecond=0):
-                logger.info("23:59:59 reached — stopping watch for the day.")
-                break
+            logger.info("Sleeping %ds until next poll…", self._interval)
+            time.sleep(self._interval)
 
     def _poll_wallet(self, wallet: Wallet) -> list[Signal]:
         try:
