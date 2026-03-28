@@ -16,6 +16,7 @@ Set dry_run=True to simulate without submitting any orders.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 
@@ -95,6 +96,11 @@ class CopyTrader:
         self._scores: dict[str, WalletScore] = {}  # address → latest score
         # Pre-expand category names → keyword lists once at startup
         self._blocked = _expand_keywords(config.blocked_keywords)
+        # Serialises the check-then-record step so concurrent stream signals
+        # for the same market don't both pass the dedup guard before either
+        # has written to the DB.
+        self._buy_lock = threading.Lock()
+        self._pending_buys: set[str] = set()  # market keys currently being processed
 
     def update_scores(self, scores: dict[str, WalletScore]) -> None:
         """Called by cmd_watch after computing/refreshing wallet scores."""
@@ -138,12 +144,24 @@ class CopyTrader:
                         reason=f"Market blocked by keyword '{kw}': {signal.market_title[:50]}",
                     )
 
-        # Skip if already invested in this market
-        if self._storage.has_paper_position(signal.condition_id, signal.token_id):
-            return CopyResult(
-                signal=signal, status="skipped",
-                reason=f"Already have an open position in this market ({signal.market_title[:40]})",
-            )
+        # Dedup: skip if already invested in this market.
+        # Also check the in-memory pending set — concurrent stream signals for
+        # the same market (multiple wallets buying simultaneously) can all pass
+        # the DB check before any of them has written the position record.
+        market_key = signal.condition_id or signal.token_id
+        with self._buy_lock:
+            if market_key in self._pending_buys:
+                return CopyResult(
+                    signal=signal, status="skipped",
+                    reason=f"Concurrent signal for same market already being processed ({signal.market_title[:40]})",
+                )
+            if self._storage.has_paper_position(signal.condition_id, signal.token_id):
+                return CopyResult(
+                    signal=signal, status="skipped",
+                    reason=f"Already have an open position in this market ({signal.market_title[:40]})",
+                )
+            # Reserve the market slot before releasing the lock
+            self._pending_buys.add(market_key)
 
         # Score-based filtering
         wallet_score = self._scores.get(signal.wallet_address)
@@ -244,6 +262,7 @@ class CopyTrader:
                 "wallet_rank": signal.wallet_rank,
                 "is_dry_run": True,  # shadow orders are always marked dry-run
             })
+            self._pending_buys.discard(market_key)
             if self._cfg.dry_run:
                 # Only count dry-run spend toward daily limit (shadow orders don't count — cap already hit)
                 self._storage.record_daily_spend(date.today().isoformat(), spend)
@@ -416,6 +435,8 @@ class CopyTrader:
                     "wallet_rank":   signal.wallet_rank,
                     "is_dry_run":    False,
                 })
+                market_key = signal.condition_id or signal.token_id
+                self._pending_buys.discard(market_key)
                 return CopyResult(
                     signal=signal, status="placed",
                     reason=f"BUY {shares:.2f} shares @ ${price:.4f} (≈${spend:.2f} USDC)",
@@ -426,10 +447,12 @@ class CopyTrader:
             else:
                 err = resp.get("errorMsg") or str(resp)
                 logger.error("Order rejected: %s", err)
+                self._pending_buys.discard(signal.condition_id or signal.token_id)
                 return CopyResult(signal=signal, status="failed", reason=f"API rejected: {err}")
 
         except Exception as exc:
             logger.error("Order placement exception: %s", exc)
+            self._pending_buys.discard(signal.condition_id or signal.token_id)
             return CopyResult(signal=signal, status="failed", reason=str(exc))
 
     def _place_sell_order(self, signal: Signal, pos: dict, shares: float, price: float, proceeds: float) -> CopyResult:
