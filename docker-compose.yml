@@ -6,6 +6,7 @@ services:
       POSTGRES_USER: polymarket
       POSTGRES_PASSWORD: polymarket
       POSTGRES_DB: polymarket
+      POSTGRES_INITDB_ARGS: "--locale=C"
     ports:
       - "5433:5432"
     volumes:
