@@ -41,12 +41,31 @@ export function PositionsTable() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
 
-  const fetchAll = useCallback(async () => {
-    const [pos, sum] = await Promise.all([
-      fetch(`/api/positions?mode=${mode}`).then((r) => r.json()),
-      fetch("/api/pnl/summary").then((r) => r.json()),
-    ]);
-    setPositions(pos);
+  const fetchAll = useCallback(async (withPriceRefresh = false) => {
+    if (withPriceRefresh) {
+      // POST /api/positions/refresh fetches live CLOB prices, writes them to DB,
+      // and returns the updated positions — use that directly
+      const refreshed: Position[] = await fetch("/api/positions/refresh", {
+        method: "POST",
+      }).then((r) => r.json());
+
+      // Filter client-side by mode
+      const filtered =
+        mode === "dry"
+          ? refreshed.filter((p) => p.is_dry_run)
+          : mode === "live"
+          ? refreshed.filter((p) => !p.is_dry_run)
+          : refreshed;
+
+      setPositions(filtered);
+    } else {
+      const pos: Position[] = await fetch(
+        `/api/positions?mode=${mode}`
+      ).then((r) => r.json());
+      setPositions(pos);
+    }
+
+    const sum = await fetch("/api/pnl/summary").then((r) => r.json());
     setSummary(sum);
     setLastRefreshed(new Date());
   }, [mode]);
@@ -60,7 +79,7 @@ export function PositionsTable() {
   async function handleRefresh() {
     setIsRefreshing(true);
     try {
-      await fetchAll();
+      await fetchAll(true);
     } finally {
       setIsRefreshing(false);
     }
