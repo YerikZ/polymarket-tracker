@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:16
+    image: postgres:16-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: polymarket
@@ -15,6 +15,22 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      POLYMARKET_DATABASE_URL: postgresql://polymarket:polymarket@db:5432/polymarket
+      POLYMARKET_PRIVATE_KEY: ${POLYMARKET_PRIVATE_KEY:-}
+      POLYMARKET_FUNDER: ${POLYMARKET_FUNDER:-}
+      POLYMARKET_POLYGON_WSS: ${POLYMARKET_POLYGON_WSS:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   pgdata:

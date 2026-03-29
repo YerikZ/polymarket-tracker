@@ -1,0 +1,97 @@
+"""
+Settings helpers — read/write the DB config store and build component configs.
+"""
+from __future__ import annotations
+
+import copy
+import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from polymarket.storage import Storage
+    from polymarket.copier import CopierConfig
+
+logger = logging.getLogger(__name__)
+
+# Fields never returned in GET /api/settings (shown masked instead)
+_SENSITIVE = {"private_key", "polygon_wss"}
+
+# Nested sensitive fields under copy_trading
+_SENSITIVE_NESTED = {"private_key"}
+
+
+def get_settings(storage: "Storage", seed_cfg: dict | None = None) -> dict:
+    """Return stored config. Seeds from ``seed_cfg`` on first run."""
+    cfg = storage.get_settings()
+    if not cfg and seed_cfg:
+        cfg = _sanitise_for_seed(seed_cfg)
+        storage.put_settings(cfg)
+        logger.info("Settings table seeded from config file.")
+    return cfg
+
+
+def get_settings_masked(storage: "Storage", seed_cfg: dict | None = None) -> dict:
+    """Return config with sensitive values replaced by '***' if set, '' if not."""
+    cfg = get_settings(storage, seed_cfg)
+    result = copy.deepcopy(cfg)
+
+    for key in _SENSITIVE:
+        if key in result:
+            result[key] = "***" if result[key] else ""
+
+    ct = result.get("copy_trading", {})
+    for key in _SENSITIVE_NESTED:
+        if key in ct:
+            ct[key] = "***" if ct[key] else ""
+
+    return result
+
+
+def put_settings(storage: "Storage", updates: dict) -> dict:
+    """Merge updates, preserving sensitive fields when blank string is submitted."""
+    existing = storage.get_settings()
+
+    # Top-level sensitive fields: blank string = keep existing
+    for key in _SENSITIVE:
+        if key in updates and updates[key] == "":
+            updates[key] = existing.get(key, "")
+
+    # Nested copy_trading sensitive fields
+    ct_updates = updates.get("copy_trading", {})
+    ct_existing = existing.get("copy_trading", {})
+    for key in _SENSITIVE_NESTED:
+        if key in ct_updates and ct_updates[key] == "":
+            ct_updates[key] = ct_existing.get(key, "")
+
+    return storage.put_settings(updates)
+
+
+def build_copier_config(cfg: dict) -> "CopierConfig":
+    """Construct CopierConfig from stored config dict."""
+    from polymarket.copier import CopierConfig
+    ct = cfg.get("copy_trading", {})
+    return CopierConfig(
+        private_key=ct.get("private_key", ""),
+        funder=ct.get("funder", ""),
+        chain_id=int(ct.get("chain_id", 137)),
+        signature_type=int(ct.get("signature_type", 2)),
+        sizing_mode=ct.get("sizing_mode", "fixed"),
+        fixed_usdc=float(ct.get("fixed_usdc", 50.0)),
+        reference_trade_usdc=float(ct.get("reference_trade_usdc", 50.0)),
+        pct_balance=float(ct.get("pct_balance", 0.02)),
+        mirror_pct=float(ct.get("mirror_pct", 0.01)),
+        max_trade_usdc=float(ct.get("max_trade_usdc", 500.0)),
+        daily_limit_usdc=float(ct.get("daily_limit_usdc", 1000.0)),
+        min_order_size_cap=float(ct.get("min_order_size_cap", 10.0)),
+        dry_run=bool(ct.get("dry_run", True)),
+        slippage=float(ct.get("slippage", 0.01)),
+        blocked_keywords=list(ct.get("blocked_keywords", [])),
+        min_score=float(ct.get("min_score", 50.0)),
+        score_scale_size=bool(ct.get("score_scale_size", True)),
+    )
+
+
+def _sanitise_for_seed(cfg: dict) -> dict:
+    """Strip keys that don't belong in the DB (e.g. data_dir, database_url)."""
+    skip = {"data_dir", "database_url"}
+    return {k: v for k, v in cfg.items() if k not in skip}

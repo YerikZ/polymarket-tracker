@@ -1,0 +1,13 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+*.pyo
+.venv
+venv
+data/
+web/client/node_modules
+web/client/dist
+*.egg-info
+.env
+config.yaml

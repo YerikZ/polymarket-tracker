@@ -113,6 +113,18 @@ CREATE TABLE IF NOT EXISTS daily_spend (
     date_iso TEXT             PRIMARY KEY,   -- 'YYYY-MM-DD'
     amount   DOUBLE PRECISION NOT NULL DEFAULT 0
 );
+
+-- Web UI config store — single row (id always 1), seeded from config.yaml on first run
+CREATE TABLE IF NOT EXISTS settings (
+    id         INT     PRIMARY KEY DEFAULT 1,
+    config     JSONB   NOT NULL DEFAULT '{}',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Score columns on wallets — populated by WalletScorer after each score_all() run
+ALTER TABLE wallets ADD COLUMN IF NOT EXISTS score        DOUBLE PRECISION;
+ALTER TABLE wallets ADD COLUMN IF NOT EXISTS tier         TEXT;
+ALTER TABLE wallets ADD COLUMN IF NOT EXISTS score_detail JSONB;
 """
 
 

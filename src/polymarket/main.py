@@ -395,6 +395,7 @@ def _compute_and_push_scores(
     wallets,
     analyzer: WalletAnalyzer,
     copy_trader: CopyTrader | None,
+    storage=None,
 ) -> dict[str, WalletScore]:
     """Fetch stats for all wallets, compute scores, and push to copy_trader."""
     stats_list = []
@@ -404,7 +405,7 @@ def _compute_and_push_scores(
         except Exception as exc:
             logger.warning("Score analysis failed for %s: %s", w.username, exc)
     scorer = WalletScorer()
-    scores = scorer.score_all(stats_list)
+    scores = scorer.score_all(stats_list, storage=storage)
     if copy_trader:
         copy_trader.update_scores(scores)
     return scores
@@ -427,7 +428,7 @@ def cmd_watch(
     if copy_trader:
         with console.status("Computing initial wallet scores…"):
             wallets = scanner.fetch_top_wallets(force_refresh=getattr(args, "refresh", False))
-            _compute_and_push_scores(wallets, analyzer, copy_trader)
+            _compute_and_push_scores(wallets, analyzer, copy_trader, storage=storage)
 
     if args.poll:
         _cmd_watch_poll(args, client, scanner, storage, cfg, copy_trader)
@@ -1169,6 +1170,26 @@ def cmd_db_migrate(data_dir: str) -> None:
         )
 
 
+def cmd_web(args: argparse.Namespace, cfg: dict, storage) -> None:
+    """Start the web UI — FastAPI backend + React frontend on a single port."""
+    try:
+        import uvicorn
+        from web.server.app import create_app
+    except ImportError:
+        console.print(
+            "[red bold]Missing dependencies.[/red bold] "
+            "Run [bold]pip install fastapi 'uvicorn[standard]'[/bold] first."
+        )
+        return
+
+    app = create_app(seed_cfg=cfg)
+    console.print(
+        f"[bold green]Polymarket Tracker Web UI[/bold green]  "
+        f"→  [link]http://{args.host}:{args.port}[/link]"
+    )
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+
+
 # ---------------------------------------------------------------------------
 # CLI wiring
 # ---------------------------------------------------------------------------
@@ -1252,6 +1273,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override data directory (default: value from config.yaml)",
     )
 
+    p_web = sub.add_parser(
+        "web",
+        help="Start the web UI (FastAPI + React dashboard)",
+    )
+    p_web.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
+    p_web.add_argument("--port", type=int, default=8080, help="Bind port (default: 8080)")
+
     return parser
 
 
@@ -1312,3 +1340,5 @@ def main() -> None:
     elif args.command == "db-migrate":
         data_dir = getattr(args, "data_dir", None) or cfg["data_dir"]
         cmd_db_migrate(data_dir)
+    elif args.command == "web":
+        cmd_web(args, cfg, storage)

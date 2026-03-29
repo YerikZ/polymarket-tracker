@@ -324,3 +324,60 @@ class Storage:
                     """,
                     (date_iso, amount),
                 )
+
+    # ── Settings (web UI config store) ───────────────────────────────────────
+
+    def get_settings(self) -> dict:
+        """Return the stored config dict. Empty dict if never seeded."""
+        with db.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT config FROM settings WHERE id = 1")
+                row = cur.fetchone()
+                return dict(row["config"]) if row else {}
+
+    def put_settings(self, updates: dict) -> dict:
+        """Deep-merge ``updates`` into the stored config and return the full result.
+
+        Uses PostgreSQL ``||`` operator for top-level merge; nested dicts
+        (e.g. copy_trading) are replaced wholesale if provided.
+        """
+        with db.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                import json
+                cur.execute(
+                    """
+                    INSERT INTO settings (id, config, updated_at)
+                        VALUES (1, %s::jsonb, now())
+                    ON CONFLICT (id) DO UPDATE
+                        SET config     = settings.config || EXCLUDED.config,
+                            updated_at = now()
+                    RETURNING config
+                    """,
+                    (json.dumps(updates),),
+                )
+                row = cur.fetchone()
+                return dict(row["config"])
+
+    # ── Wallet scores ─────────────────────────────────────────────────────────
+
+    def update_wallet_score(
+        self,
+        address: str,
+        score: float,
+        tier: str,
+        detail: dict,
+    ) -> None:
+        """Persist wallet score columns after a score_all() run."""
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                import json
+                cur.execute(
+                    """
+                    UPDATE wallets
+                       SET score        = %s,
+                           tier         = %s,
+                           score_detail = %s::jsonb
+                     WHERE address = %s
+                    """,
+                    (score, tier, json.dumps(detail), address),
+                )

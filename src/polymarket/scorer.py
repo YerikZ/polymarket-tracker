@@ -48,12 +48,34 @@ class WalletScorer:
     alone gives S3 = neutral.
     """
 
-    def score_all(self, stats_list: list[WalletStats]) -> dict[str, WalletScore]:
-        """Return {address: WalletScore} for every wallet in the list."""
+    def score_all(
+        self,
+        stats_list: list[WalletStats],
+        storage=None,
+    ) -> dict[str, WalletScore]:
+        """Return {address: WalletScore} for every wallet in the list.
+
+        If ``storage`` is provided, each score is written back to the
+        ``wallets`` table so the web UI can read it without re-computing.
+        """
         scores: dict[str, WalletScore] = {}
         for stats in stats_list:
             peers = [s for s in stats_list if s.wallet.address != stats.wallet.address]
             scores[stats.wallet.address] = self._compute(stats, peers)
+
+        if storage is not None:
+            from dataclasses import asdict
+            for ws in scores.values():
+                try:
+                    storage.update_wallet_score(
+                        ws.address,
+                        ws.total,
+                        ws.copy_tier,
+                        asdict(ws),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("Failed to persist score for %s: %s", ws.address, exc)
+
         return scores
 
     def score_one(self, stats: WalletStats) -> WalletScore:
