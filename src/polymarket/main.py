@@ -1173,14 +1173,14 @@ def cmd_db_migrate(data_dir: str) -> None:
 def cmd_web(args: argparse.Namespace, cfg: dict, storage) -> None:
     """Start the web UI — FastAPI backend + React frontend on a single port."""
     try:
-        import uvicorn
-        from web.server.app import create_app
+        import uvicorn  # noqa: F401
     except ImportError:
         console.print(
             "[red bold]Missing dependencies.[/red bold] "
             "Run [bold]pip install fastapi 'uvicorn[standard]'[/bold] first."
         )
         return
+    from web.server.app import create_app
 
     app = create_app(seed_cfg=cfg)
     console.print(

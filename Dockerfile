@@ -9,6 +9,7 @@ RUN npm run build
 # ── Stage 2: Python app + built frontend ────────────────────────────────────
 FROM python:3.11-slim
 WORKDIR /app
+ENV PYTHONPATH=/app
 
 # System deps for psycopg2-binary and web3
 RUN apt-get update && apt-get install -y --no-install-recommends \
