@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState, useEffect, useCallback } from "react";
 import { RefreshCw } from "lucide-react";
 import type { Position, PnlSummary } from "../lib/types";
 import { PnLChart } from "./PnLChart";
@@ -36,30 +35,32 @@ function MetricCard({ label, value, sub }: { label: string; value: string; sub?:
 
 export function PositionsTable() {
   const [mode, setMode] = useState<ModeFilter>("all");
+  const [positions, setPositions] = useState<Position[]>([]);
+  const [summary, setSummary] = useState<PnlSummary | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
 
-  const { data: positions = [], isLoading, refetch: refetchPositions } = useQuery<Position[]>({
-    queryKey: ["positions", mode],
-    queryFn: () => fetch(`/api/positions?mode=${mode}`).then((r) => r.json()),
-    refetchOnWindowFocus: false,
-    refetchInterval: false,
-    staleTime: Infinity,
-  });
+  const fetchAll = useCallback(async () => {
+    const [pos, sum] = await Promise.all([
+      fetch(`/api/positions?mode=${mode}`).then((r) => r.json()),
+      fetch("/api/pnl/summary").then((r) => r.json()),
+    ]);
+    setPositions(pos);
+    setSummary(sum);
+    setLastRefreshed(new Date());
+  }, [mode]);
 
-  const { data: summary, refetch: refetchSummary } = useQuery<PnlSummary>({
-    queryKey: ["pnl-summary"],
-    queryFn: () => fetch("/api/pnl/summary").then((r) => r.json()),
-    refetchOnWindowFocus: false,
-    refetchInterval: false,
-    staleTime: Infinity,
-  });
+  // Initial load + reload when mode changes
+  useEffect(() => {
+    setIsLoading(true);
+    fetchAll().finally(() => setIsLoading(false));
+  }, [fetchAll]);
 
   async function handleRefresh() {
     setIsRefreshing(true);
     try {
-      await Promise.all([refetchPositions(), refetchSummary()]);
-      setLastRefreshed(new Date());
+      await fetchAll();
     } finally {
       setIsRefreshing(false);
     }
@@ -123,7 +124,7 @@ export function PositionsTable() {
           )}
           <button
             onClick={handleRefresh}
-            disabled={isRefreshing}
+            disabled={isRefreshing || isLoading}
             className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-zinc-700 text-xs text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <RefreshCw className={`w-3 h-3 ${isRefreshing ? "animate-spin" : ""}`} />
