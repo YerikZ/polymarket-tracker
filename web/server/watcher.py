@@ -93,6 +93,7 @@ async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> No
         max_signal_age = int(cfg.get("max_signal_age", 3600))
         wallet_refresh_interval = int(cfg.get("wallet_refresh_interval", 600))
         wss_url = cfg.get("polygon_wss", "").strip()
+        watcher_mode = cfg.get("watcher_mode", "poll")
 
         client = PolymarketClient(
             request_delay=request_delay,
@@ -145,8 +146,8 @@ async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> No
             if copy_trader:
                 await asyncio.to_thread(copy_trader.copy, sig)
 
-        # Choose stream or poll
-        if wss_url:
+        # Choose stream or poll — watcher_mode takes precedence; stream requires wss_url
+        if watcher_mode == "stream" and wss_url:
             async with state._lock:
                 state.mode = "stream"
                 state.status = "running"

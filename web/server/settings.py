@@ -22,6 +22,7 @@ _DEFAULTS: dict = {
     "wallet_refresh_interval": 600,
     "max_signal_age": 3600,
     "log_level": "INFO",
+    "watcher_mode": "poll",
     "polygon_wss": "",
     "copy_trading": {
         "dry_run": True,

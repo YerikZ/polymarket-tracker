@@ -101,6 +101,7 @@ export interface Settings {
   wallet_refresh_interval?: number;
   log_level?: string;
   max_signal_age?: number;
+  watcher_mode?: "stream" | "poll";
   polygon_wss?: string;
   copy_trading?: {
     private_key?: string;

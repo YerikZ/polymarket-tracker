@@ -1,22 +1,43 @@
 import { Loader2, Play, Square, Wifi, WifiOff } from "lucide-react";
 import { useWatcherStatus, useStartWatcher, useStopWatcher } from "../hooks/useWatcherStatus";
 import { fmtUsd } from "../lib/utils";
-import { useQuery } from "@tanstack/react-query";
-import type { PnlSummary } from "../lib/types";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import type { PnlSummary, Settings } from "../lib/types";
 
 export function StatusBar() {
+  const qc = useQueryClient();
   const { data: status } = useWatcherStatus();
   const start = useStartWatcher();
   const stop = useStopWatcher();
+
   const { data: pnl } = useQuery<PnlSummary>({
     queryKey: ["pnl-summary"],
     queryFn: () => fetch("/api/pnl/summary").then((r) => r.json()),
     refetchInterval: 15_000,
   });
 
+  const { data: settings } = useQuery<Settings>({
+    queryKey: ["settings"],
+    queryFn: () => fetch("/api/settings").then((r) => r.json()),
+    staleTime: 30_000,
+  });
+
+  const modeMutation = useMutation({
+    mutationFn: (mode: "poll" | "stream") =>
+      fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ watcher_mode: mode }),
+      }).then((r) => r.json()),
+    onSuccess: (data) => qc.setQueryData(["settings"], data),
+  });
+
   const isRunning = status?.status === "running";
   const isStarting = status?.status === "starting";
   const busy = start.isPending || stop.isPending || isStarting;
+
+  const watcherMode = settings?.watcher_mode ?? "poll";
+  const isDryRun = settings?.copy_trading?.dry_run !== false;
 
   return (
     <header className="flex items-center justify-between px-4 py-2 bg-zinc-900 border-b border-zinc-800 sticky top-0 z-10">
@@ -76,25 +97,60 @@ export function StatusBar() {
         </div>
       )}
 
-      {/* Right: start/stop */}
-      <button
-        onClick={() => (isRunning ? stop.mutate() : start.mutate())}
-        disabled={busy}
-        className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold transition-colors ${
-          isRunning
-            ? "bg-red-500/15 text-red-400 hover:bg-red-500/25 border border-red-500/30"
-            : "bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/30"
-        } disabled:opacity-50 disabled:cursor-not-allowed`}
-      >
-        {busy ? (
-          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-        ) : isRunning ? (
-          <Square className="w-3.5 h-3.5" />
-        ) : (
-          <Play className="w-3.5 h-3.5" />
+      {/* Right: dry-run badge + mode toggle + start/stop */}
+      <div className="flex items-center gap-2">
+        {/* Dry-run badge */}
+        {settings && (
+          <span
+            className={`px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider border ${
+              isDryRun
+                ? "bg-amber-500/10 text-amber-400 border-amber-500/30"
+                : "bg-red-500/10 text-red-400 border-red-500/30"
+            }`}
+          >
+            {isDryRun ? "Simulated" : "Live"}
+          </span>
         )}
-        {isRunning ? "Stop" : "Start"}
-      </button>
+
+        {/* Mode toggle */}
+        <div className="flex items-center rounded border border-zinc-700 overflow-hidden text-[10px] font-semibold uppercase tracking-wider">
+          {(["poll", "stream"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => watcherMode !== m && modeMutation.mutate(m)}
+              disabled={modeMutation.isPending}
+              className={`px-2.5 py-1 transition-colors ${
+                watcherMode === m
+                  ? "bg-zinc-700 text-zinc-100"
+                  : "bg-transparent text-zinc-500 hover:text-zinc-300"
+              } disabled:cursor-not-allowed`}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+
+        {/* Start/Stop */}
+        <button
+          onClick={() => (isRunning ? stop.mutate() : start.mutate())}
+          disabled={busy}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold transition-colors ${
+            isRunning
+              ? "bg-red-500/15 text-red-400 hover:bg-red-500/25 border border-red-500/30"
+              : "bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/30"
+          } disabled:opacity-50 disabled:cursor-not-allowed`}
+        >
+          {busy ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : isRunning ? (
+            <Square className="w-3.5 h-3.5" />
+          ) : (
+            <Play className="w-3.5 h-3.5" />
+          )}
+          {isRunning ? "Stop" : "Start"}
+        </button>
+      </div>
     </header>
   );
 }
