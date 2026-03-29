@@ -95,6 +95,16 @@ async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> No
         wss_url = cfg.get("polygon_wss", "").strip()
         watcher_mode = cfg.get("watcher_mode", "poll")
 
+        # Fail fast: stream mode requires polygon_wss before any network calls
+        if watcher_mode == "stream" and not wss_url:
+            err = "Stream mode requires a Polygon WSS URL. Add it in Settings → Credentials or switch to Poll mode."
+            async with state._lock:
+                state.status = "error"
+                state.error = err
+                state.task = None
+            logger.error(err)
+            return
+
         client = PolymarketClient(
             request_delay=request_delay,
             max_retries=max_retries,
@@ -146,15 +156,7 @@ async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> No
             if copy_trader:
                 await asyncio.to_thread(copy_trader.copy, sig)
 
-        # Choose stream or poll — watcher_mode takes precedence; stream requires wss_url
-        if watcher_mode == "stream" and not wss_url:
-            async with state._lock:
-                state.status = "error"
-                state.error = "Stream mode requires a Polygon WSS URL. Add it in Settings → Credentials or switch to Poll mode."
-                state.task = None
-            logger.error("Stream mode selected but polygon_wss is not configured.")
-            return
-
+        # Choose stream or poll (stream + wss_url already validated above)
         if watcher_mode == "stream":
             async with state._lock:
                 state.mode = "stream"
