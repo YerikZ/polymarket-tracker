@@ -27,8 +27,5 @@ COPY web/__init__.py ./web/__init__.py
 # Copy built React from stage 1
 COPY --from=frontend /app/web/client/dist ./web/client/dist
 
-# Config file (optional — settings are overridden by DB/env vars at runtime)
-COPY config.yaml ./
-
 EXPOSE 8080
 CMD ["polymarket", "web", "--host", "0.0.0.0", "--port", "8080"]
