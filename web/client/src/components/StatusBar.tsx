@@ -62,11 +62,8 @@ export function StatusBar() {
           ) : status?.status === "error" ? (
             <>
               <WifiOff className="w-3.5 h-3.5 text-red-400" />
-              <span
-                className="text-red-400 max-w-xs truncate"
-                title={status.error ?? undefined}
-              >
-                Error{status.error ? ` — ${status.error}` : ""}
+              <span className="text-red-400" title={status.error ?? undefined}>
+                Error
               </span>
             </>
           ) : (
