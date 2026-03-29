@@ -167,6 +167,7 @@ class CopyTrader:
         wallet_score = self._scores.get(signal.wallet_address)
         if wallet_score and self._cfg.min_score > 0:
             if wallet_score.copy_size_pct == 0.0:
+                self._pending_buys.discard(market_key)
                 return CopyResult(
                     signal=signal, status="skipped",
                     reason=f"Wallet score too low (tier {wallet_score.copy_tier}, "
@@ -188,6 +189,7 @@ class CopyTrader:
             )
 
         if spend <= 0:
+            self._pending_buys.discard(market_key)
             return CopyResult(signal=signal, status="skipped", reason="Computed spend is $0")
 
         # Check daily limit — evaluated live so sell credits can restore live mode
@@ -196,6 +198,7 @@ class CopyTrader:
         if spent_today + spend > self._cfg.daily_limit_usdc:
             remaining = max(0.0, self._cfg.daily_limit_usdc - spent_today)
             if self._cfg.dry_run:
+                self._pending_buys.discard(market_key)
                 return CopyResult(
                     signal=signal, status="skipped",
                     reason=f"Daily limit reached (${self._cfg.daily_limit_usdc:.0f}). "
@@ -223,6 +226,7 @@ class CopyTrader:
 
         # Skip if the market's minimum is above our cap (prevents forced large buys)
         if min_order_size > self._cfg.min_order_size_cap:
+            self._pending_buys.discard(market_key)
             return CopyResult(
                 signal=signal, status="skipped",
                 reason=(
