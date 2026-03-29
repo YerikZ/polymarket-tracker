@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
 import type { Position, PnlSummary } from "../lib/types";
 import { PnLChart } from "./PnLChart";
@@ -36,8 +36,6 @@ function MetricCard({ label, value, sub }: { label: string; value: string; sub?:
 
 export function PositionsTable() {
   const [mode, setMode] = useState<ModeFilter>("all");
-  const qc = useQueryClient();
-
   const {
     data: positions = [],
     isLoading,
