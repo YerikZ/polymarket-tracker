@@ -147,7 +147,15 @@ async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> No
                 await asyncio.to_thread(copy_trader.copy, sig)
 
         # Choose stream or poll — watcher_mode takes precedence; stream requires wss_url
-        if watcher_mode == "stream" and wss_url:
+        if watcher_mode == "stream" and not wss_url:
+            async with state._lock:
+                state.status = "error"
+                state.error = "Stream mode requires a Polygon WSS URL. Add it in Settings → Credentials or switch to Poll mode."
+                state.task = None
+            logger.error("Stream mode selected but polygon_wss is not configured.")
+            return
+
+        if watcher_mode == "stream":
             async with state._lock:
                 state.mode = "stream"
                 state.status = "running"

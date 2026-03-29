@@ -43,7 +43,7 @@ def _fetch_alerts(storage, limit: int, since_id: int) -> list[dict]:
 
 
 @ws_router.websocket("/ws/signals")
-async def ws_signals(websocket: WebSocket, request: Request):
+async def ws_signals(websocket: WebSocket):
     await websocket.accept()
     storage = websocket.app.state.storage
 
