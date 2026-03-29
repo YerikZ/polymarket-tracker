@@ -14,6 +14,7 @@ export function StatusBar() {
     queryKey: ["pnl-summary"],
     queryFn: () => fetch("/api/pnl/summary").then((r) => r.json()),
     staleTime: Infinity,
+    refetchOnWindowFocus: false,
   });
 
   const { data: settings } = useQuery<Settings>({

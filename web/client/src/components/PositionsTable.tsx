@@ -43,23 +43,24 @@ export function PositionsTable() {
     isLoading,
     isFetching,
     dataUpdatedAt,
-    refetch: refetchPositions,
   } = useQuery<Position[]>({
     queryKey: ["positions", mode],
     queryFn: () => fetch(`/api/positions?mode=${mode}`).then((r) => r.json()),
     staleTime: Infinity,
+    refetchOnWindowFocus: false,
   });
 
-  const { data: summary, refetch: refetchSummary } = useQuery<PnlSummary>({
+  const { data: summary } = useQuery<PnlSummary>({
     queryKey: ["pnl-summary"],
     queryFn: () => fetch("/api/pnl/summary").then((r) => r.json()),
     staleTime: Infinity,
+    refetchOnWindowFocus: false,
   });
 
   function handleRefresh() {
-    refetchPositions();
-    refetchSummary();
-    // Also refresh the status-bar summary
+    // invalidateQueries marks stale and immediately refetches all active
+    // observers — covers both this component and the StatusBar's pnl-summary.
+    qc.invalidateQueries({ queryKey: ["positions"] });
     qc.invalidateQueries({ queryKey: ["pnl-summary"] });
   }
 
