@@ -292,10 +292,10 @@ export function SettingsForm() {
         )}
 
         <Field label="Max trade (USDC)" hint="Hard cap per order">
-          <NumInput value={ct.max_trade_usdc} onChange={(v) => setCt("max_trade_usdc", v)} step={10} />
+          <NumInput value={ct.max_trade_usdc} onChange={(v) => setCt("max_trade_usdc", v)} />
         </Field>
         <Field label="Daily limit (USDC)" hint="Total cap for today">
-          <NumInput value={ct.daily_limit_usdc} onChange={(v) => setCt("daily_limit_usdc", v)} step={50} />
+          <NumInput value={ct.daily_limit_usdc} onChange={(v) => setCt("daily_limit_usdc", v)} />
         </Field>
         <Field label="Slippage" hint="Added to price for better fill">
           <NumInput value={ct.slippage} onChange={(v) => setCt("slippage", v)} step={0.005} />

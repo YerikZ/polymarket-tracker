@@ -13,6 +13,35 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Defaults shown in the UI when the settings table has never been written.
+# These are merged under any values that come from config.yaml / env vars.
+_DEFAULTS: dict = {
+    "top_n": 20,
+    "poll_interval": 300,
+    "min_position_usdc": 50.0,
+    "wallet_refresh_interval": 600,
+    "max_signal_age": 3600,
+    "log_level": "INFO",
+    "polygon_wss": "",
+    "copy_trading": {
+        "dry_run": True,
+        "sizing_mode": "fixed",
+        "fixed_usdc": 1.0,
+        "reference_trade_usdc": 50.0,
+        "pct_balance": 0.02,
+        "mirror_pct": 0.01,
+        "max_trade_usdc": 10.0,
+        "daily_limit_usdc": 30.0,
+        "min_order_size_cap": 10.0,
+        "slippage": 0.01,
+        "min_score": 50.0,
+        "score_scale_size": True,
+        "blocked_keywords": [],
+        "private_key": "",
+        "funder": "",
+    },
+}
+
 # Fields never returned in GET /api/settings (shown masked instead)
 _SENSITIVE = {"private_key", "polygon_wss"}
 
@@ -21,12 +50,22 @@ _SENSITIVE_NESTED = {"private_key"}
 
 
 def get_settings(storage: "Storage", seed_cfg: dict | None = None) -> dict:
-    """Return stored config. Seeds from ``seed_cfg`` on first run."""
+    """Return stored config. Seeds from defaults + ``seed_cfg`` on first run."""
     cfg = storage.get_settings()
-    if not cfg and seed_cfg:
-        cfg = _sanitise_for_seed(seed_cfg)
-        storage.put_settings(cfg)
-        logger.info("Settings table seeded from config file.")
+    if not cfg:
+        # Start from built-in defaults, then overlay values from config.yaml/env
+        merged = copy.deepcopy(_DEFAULTS)
+        if seed_cfg:
+            file_cfg = _sanitise_for_seed(seed_cfg)
+            # Merge top-level keys
+            for k, v in file_cfg.items():
+                if k == "copy_trading" and isinstance(v, dict):
+                    merged["copy_trading"].update(v)
+                else:
+                    merged[k] = v
+        storage.put_settings(merged)
+        cfg = merged
+        logger.info("Settings table seeded with defaults.")
     return cfg
 
 
