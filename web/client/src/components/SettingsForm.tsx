@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, KeyboardEvent } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Save, Eye, EyeOff, AlertTriangle } from "lucide-react";
+import { Save, Eye, EyeOff, AlertTriangle, X } from "lucide-react";
 import type { Settings } from "../lib/types";
 
 async function fetchSettings(): Promise<Settings> {
@@ -111,6 +111,72 @@ function SecretInput({
       >
         {show ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
       </button>
+    </div>
+  );
+}
+
+function TagInput({
+  tags,
+  onChange,
+  placeholder = "Type and press Enter",
+}: {
+  tags: string[];
+  onChange: (tags: string[]) => void;
+  placeholder?: string;
+}) {
+  const [input, setInput] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  function addTag(raw: string) {
+    const trimmed = raw.trim().toLowerCase();
+    if (trimmed && !tags.includes(trimmed)) {
+      onChange([...tags, trimmed]);
+    }
+    setInput("");
+  }
+
+  function onKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter" || e.key === ",") {
+      e.preventDefault();
+      addTag(input);
+    } else if (e.key === "Backspace" && input === "" && tags.length > 0) {
+      onChange(tags.slice(0, -1));
+    }
+  }
+
+  function removeTag(tag: string) {
+    onChange(tags.filter((t) => t !== tag));
+  }
+
+  return (
+    <div
+      className="flex flex-wrap gap-1.5 bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 min-h-[34px] cursor-text focus-within:border-zinc-500 transition-colors"
+      onClick={() => inputRef.current?.focus()}
+    >
+      {tags.map((tag) => (
+        <span
+          key={tag}
+          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-700 text-zinc-200 text-[11px]"
+        >
+          {tag}
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); removeTag(tag); }}
+            className="text-zinc-400 hover:text-zinc-100 transition-colors"
+          >
+            <X className="w-2.5 h-2.5" />
+          </button>
+        </span>
+      ))}
+      <input
+        ref={inputRef}
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        onKeyDown={onKeyDown}
+        onBlur={() => { if (input) addTag(input); }}
+        placeholder={tags.length === 0 ? placeholder : ""}
+        className="flex-1 min-w-[120px] bg-transparent text-xs text-zinc-100 outline-none placeholder:text-zinc-600"
+      />
     </div>
   );
 }
@@ -317,18 +383,11 @@ export function SettingsForm() {
             </span>
           </div>
         </Field>
-        <Field label="Blocked keywords" hint="Comma-separated market keywords to skip" >
-          <input
-            type="text"
-            value={(ct.blocked_keywords ?? []).join(", ")}
-            onChange={(e) =>
-              setCt(
-                "blocked_keywords",
-                e.target.value.split(",").map((s) => s.trim()).filter(Boolean)
-              )
-            }
-            placeholder="bitcoin, ethereum, crypto"
-            className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-xs text-zinc-100 w-full focus:outline-none focus:border-zinc-500 placeholder:text-zinc-600"
+        <Field label="Blocked keywords" hint="Enter to add · Backspace to remove last">
+          <TagInput
+            tags={ct.blocked_keywords ?? []}
+            onChange={(tags) => setCt("blocked_keywords", tags)}
+            placeholder="bitcoin, ethereum…"
           />
         </Field>
       </Section>
