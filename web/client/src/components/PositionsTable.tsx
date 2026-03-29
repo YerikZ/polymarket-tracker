@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { RefreshCw } from "lucide-react";
 import type { Position, PnlSummary } from "../lib/types";
 import { PnLChart } from "./PnLChart";
-import { fmtPct, fmtPrice, fmtUsd, fmtDate } from "../lib/utils";
+import { fmtPct, fmtPrice, fmtUsd, fmtDate, timeAgo } from "../lib/utils";
 
 type ModeFilter = "all" | "dry" | "live";
 
@@ -35,18 +36,34 @@ function MetricCard({ label, value, sub }: { label: string; value: string; sub?:
 
 export function PositionsTable() {
   const [mode, setMode] = useState<ModeFilter>("all");
+  const qc = useQueryClient();
 
-  const { data: positions = [], isLoading } = useQuery<Position[]>({
+  const {
+    data: positions = [],
+    isLoading,
+    isFetching,
+    dataUpdatedAt,
+    refetch: refetchPositions,
+  } = useQuery<Position[]>({
     queryKey: ["positions", mode],
     queryFn: () => fetch(`/api/positions?mode=${mode}`).then((r) => r.json()),
-    refetchInterval: 15_000,
+    staleTime: Infinity,
   });
 
-  const { data: summary } = useQuery<PnlSummary>({
+  const { data: summary, refetch: refetchSummary } = useQuery<PnlSummary>({
     queryKey: ["pnl-summary"],
     queryFn: () => fetch("/api/pnl/summary").then((r) => r.json()),
-    refetchInterval: 15_000,
+    staleTime: Infinity,
   });
+
+  function handleRefresh() {
+    refetchPositions();
+    refetchSummary();
+    // Also refresh the status-bar summary
+    qc.invalidateQueries({ queryKey: ["pnl-summary"] });
+  }
+
+  const lastRefreshed = dataUpdatedAt ? new Date(dataUpdatedAt) : null;
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -83,7 +100,7 @@ export function PositionsTable() {
         <PnLChart positions={positions} />
       </div>
 
-      {/* Filter */}
+      {/* Filter + refresh */}
       <div className="flex items-center gap-2">
         <span className="text-xs text-zinc-500">Mode:</span>
         {(["all", "dry", "live"] as ModeFilter[]).map((f) => (
@@ -97,6 +114,22 @@ export function PositionsTable() {
             {f}
           </button>
         ))}
+
+        <div className="ml-auto flex items-center gap-2">
+          {lastRefreshed && (
+            <span className="text-[11px] text-zinc-600">
+              Updated {timeAgo(lastRefreshed.toISOString())}
+            </span>
+          )}
+          <button
+            onClick={handleRefresh}
+            disabled={isFetching}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-zinc-700 text-xs text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <RefreshCw className={`w-3 h-3 ${isFetching ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Positions table */}

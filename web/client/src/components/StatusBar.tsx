@@ -13,7 +13,7 @@ export function StatusBar() {
   const { data: pnl } = useQuery<PnlSummary>({
     queryKey: ["pnl-summary"],
     queryFn: () => fetch("/api/pnl/summary").then((r) => r.json()),
-    refetchInterval: 15_000,
+    staleTime: Infinity,
   });
 
   const { data: settings } = useQuery<Settings>({
