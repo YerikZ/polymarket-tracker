@@ -10,6 +10,9 @@ class Wallet:
     pnl: float            # USD profit/loss from leaderboard
     trading_volume: float
     fetched_at: str       # ISO-8601
+    score: Optional[float] = None
+    tier: Optional[str] = None
+    score_detail: Optional[dict] = None
 
 
 @dataclass
