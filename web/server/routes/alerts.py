@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query, Request, WebSocket, WebSocketDisconnect
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["alerts"])
+ws_router = APIRouter(tags=["alerts-ws"])
 
 
 @router.get("/alerts")
@@ -41,7 +42,7 @@ def _fetch_alerts(storage, limit: int, since_id: int) -> list[dict]:
             return [_row_to_dict(r) for r in cur.fetchall()]
 
 
-@router.websocket("/ws/signals")
+@ws_router.websocket("/ws/signals")
 async def ws_signals(websocket: WebSocket, request: Request):
     await websocket.accept()
     storage = websocket.app.state.storage
