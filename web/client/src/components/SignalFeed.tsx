@@ -3,9 +3,70 @@ import { useSignals } from "../hooks/useSignals";
 import { TierBadge } from "./TierBadge";
 import { fmtPrice, fmtUsd, timeAgo } from "../lib/utils";
 import { useQuery } from "@tanstack/react-query";
-import type { Wallet } from "../lib/types";
+import type { CopierStatus, Wallet } from "../lib/types";
 
 type SideFilter = "ALL" | "BUY" | "SELL";
+
+const ACTION_STYLES: Record<
+  CopierStatus,
+  { label: string; className: string }
+> = {
+  placed: {
+    label: "PLACED",
+    className: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
+  },
+  dry_run: {
+    label: "SIM",
+    className: "bg-sky-500/15 text-sky-400 border-sky-500/30",
+  },
+  shadow: {
+    label: "SHADOW",
+    className: "bg-violet-500/15 text-violet-400 border-violet-500/30",
+  },
+  skipped: {
+    label: "SKIP",
+    className: "bg-zinc-700/50 text-zinc-500 border-zinc-600/40",
+  },
+  failed: {
+    label: "ERR",
+    className: "bg-red-500/15 text-red-400 border-red-500/30",
+  },
+};
+
+function ActionBadge({
+  status,
+  reason,
+  spend,
+}: {
+  status: CopierStatus | null;
+  reason: string | null;
+  spend: number | null;
+}) {
+  if (!status) {
+    return <span className="text-zinc-700">—</span>;
+  }
+
+  const { label, className } = ACTION_STYLES[status];
+
+  const tooltip = [
+    reason,
+    spend ? `$${spend.toFixed(2)}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] font-semibold tracking-wider cursor-default ${className}`}
+      title={tooltip || undefined}
+    >
+      {label}
+      {spend != null && spend > 0 && (
+        <span className="opacity-75">${spend.toFixed(2)}</span>
+      )}
+    </span>
+  );
+}
 
 export function SignalFeed() {
   const signals = useSignals();
@@ -45,7 +106,9 @@ export function SignalFeed() {
             {f}
           </button>
         ))}
-        <span className="ml-auto text-xs text-zinc-600">{filtered.length} signals</span>
+        <span className="ml-auto text-xs text-zinc-600">
+          {filtered.length} signals
+        </span>
       </div>
 
       {/* Table */}
@@ -61,12 +124,13 @@ export function SignalFeed() {
               <th className="px-4 py-2 font-medium">Outcome</th>
               <th className="px-4 py-2 font-medium text-right">Price</th>
               <th className="px-4 py-2 font-medium text-right">Size</th>
+              <th className="px-4 py-2 font-medium">Action</th>
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={8} className="text-center text-zinc-600 py-16">
+                <td colSpan={9} className="text-center text-zinc-600 py-16">
                   No signals yet — start the watcher to stream live trades.
                 </td>
               </tr>
@@ -80,7 +144,9 @@ export function SignalFeed() {
                   {timeAgo(s.detected_at)}
                 </td>
                 <td className="px-4 py-2 whitespace-nowrap">
-                  <span className="text-zinc-200">{s.username || s.wallet_address.slice(0, 8)}</span>
+                  <span className="text-zinc-200">
+                    {s.username || s.wallet_address.slice(0, 8)}
+                  </span>
                   <span className="text-zinc-600 ml-1">#{s.wallet_rank}</span>
                 </td>
                 <td className="px-4 py-2">
@@ -95,7 +161,10 @@ export function SignalFeed() {
                     {s.side}
                   </span>
                 </td>
-                <td className="px-4 py-2 text-zinc-300 max-w-xs truncate">
+                <td
+                  className="px-4 py-2 text-zinc-300 max-w-xs truncate"
+                  title={s.market_title}
+                >
                   {s.market_title}
                 </td>
                 <td className="px-4 py-2 text-zinc-400">{s.outcome}</td>
@@ -104,6 +173,13 @@ export function SignalFeed() {
                 </td>
                 <td className="px-4 py-2 text-right text-zinc-200">
                   {fmtUsd(s.usdc_size, 0).replace("+", "")}
+                </td>
+                <td className="px-4 py-2">
+                  <ActionBadge
+                    status={s.copier_status}
+                    reason={s.copier_reason}
+                    spend={s.copier_spend}
+                  />
                 </td>
               </tr>
             ))}

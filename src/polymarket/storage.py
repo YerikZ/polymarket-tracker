@@ -125,7 +125,11 @@ class Storage:
 
     # ── Alerts (signals) ─────────────────────────────────────────────────────
 
-    def append_alert(self, signal: Signal) -> None:
+    def append_alert(self, signal: Signal) -> int:
+        """Insert a signal into the alerts table and return the new row id.
+
+        Returns 0 if the row was skipped due to a duplicate transaction_hash.
+        """
         d = asdict(signal)
         with db.get_conn() as conn:
             with conn.cursor() as cur:
@@ -141,8 +145,34 @@ class Storage:
                          %(side)s, %(size)s, %(usdc_size)s, %(price)s,
                          %(detected_at)s, %(transaction_hash)s, %(token_id)s)
                     ON CONFLICT DO NOTHING
+                    RETURNING id
                     """,
                     d,
+                )
+                row = cur.fetchone()
+                return int(row[0]) if row else 0
+
+    def update_alert_copier_result(
+        self,
+        alert_id: int,
+        status: str,
+        reason: str,
+        spend_usdc: float,
+    ) -> None:
+        """Write the copier decision back to the alerts row."""
+        if not alert_id:
+            return
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE alerts
+                       SET copier_status = %s,
+                           copier_reason = %s,
+                           copier_spend  = %s
+                     WHERE id = %s
+                    """,
+                    (status, reason, spend_usdc, alert_id),
                 )
 
     def get_alerts(self, limit: int = 50) -> list[dict]:

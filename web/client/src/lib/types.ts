@@ -1,3 +1,5 @@
+export type CopierStatus = "placed" | "dry_run" | "shadow" | "skipped" | "failed";
+
 export interface Alert {
   id: number;
   wallet_address: string;
@@ -13,6 +15,9 @@ export interface Alert {
   detected_at: string;
   transaction_hash: string;
   token_id: string;
+  copier_status: CopierStatus | null;
+  copier_reason: string | null;
+  copier_spend: number | null;
 }
 
 export interface Wallet {

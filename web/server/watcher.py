@@ -154,7 +154,15 @@ async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> No
             async with state._lock:
                 state.last_signal_at = datetime.now(timezone.utc).isoformat()
             if copy_trader:
-                await asyncio.to_thread(copy_trader.copy, sig)
+                result = await asyncio.to_thread(copy_trader.copy, sig)
+                if sig.alert_id:
+                    await asyncio.to_thread(
+                        storage.update_alert_copier_result,
+                        sig.alert_id,
+                        result.status,
+                        result.reason,
+                        result.spend_usdc,
+                    )
 
         # Choose stream or poll (stream + wss_url already validated above)
         if watcher_mode == "stream":

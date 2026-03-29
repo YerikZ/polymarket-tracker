@@ -235,7 +235,7 @@ class PolymarketStream:
             token_id=token_id,
         )
         # Run the blocking DB insert in a thread so we never stall the event loop
-        await asyncio.to_thread(self._storage.append_alert, sig)
+        sig.alert_id = await asyncio.to_thread(self._storage.append_alert, sig)
         await on_signal(sig)
 
     async def _market_info(self, token_id: str) -> dict:

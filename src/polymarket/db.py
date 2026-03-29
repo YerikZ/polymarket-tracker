@@ -126,6 +126,14 @@ CREATE TABLE IF NOT EXISTS settings (
 ALTER TABLE wallets ADD COLUMN IF NOT EXISTS score        DOUBLE PRECISION;
 ALTER TABLE wallets ADD COLUMN IF NOT EXISTS tier         TEXT;
 ALTER TABLE wallets ADD COLUMN IF NOT EXISTS score_detail JSONB;
+
+-- Copier outcome columns on alerts — written back after CopyTrader.copy() returns
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS copier_status TEXT;
+  -- placed | dry_run | shadow | skipped | failed  (NULL = no copier configured)
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS copier_reason TEXT;
+  -- human-readable explanation for the status
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS copier_spend  DOUBLE PRECISION;
+  -- USDC actually spent (non-zero for placed / dry_run / shadow)
 """
 
 

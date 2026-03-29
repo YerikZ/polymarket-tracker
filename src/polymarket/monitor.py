@@ -68,7 +68,7 @@ class SignalMonitor:
                 for wallet in wallets:
                     signals = self._poll_wallet(wallet)
                     for sig in signals:
-                        self._storage.append_alert(sig)
+                        sig.alert_id = self._storage.append_alert(sig)
                         on_signal(sig)
             except Exception as exc:
                 logger.error("Error during poll: %s", exc)

@@ -70,6 +70,7 @@ class Signal:
     detected_at: str      # ISO-8601
     transaction_hash: str
     token_id: str = ""    # ERC-1155 asset ID — required to place a copy order
+    alert_id: int = 0     # DB row id from alerts table, set after append_alert()
 
 
 @dataclass
