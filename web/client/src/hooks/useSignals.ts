@@ -18,14 +18,20 @@ export function useSignals() {
       wsRef.current = ws;
 
       ws.onmessage = (e) => {
-        const msg = JSON.parse(e.data) as { type: "seed" | "new"; data: Alert[] };
+        const msg = JSON.parse(e.data) as {
+          type: "seed" | "new" | "update";
+          data: Alert[];
+        };
         if (msg.type === "seed") {
           setSignals(msg.data);
-        } else {
-          setSignals((prev) => {
-            const next = [...msg.data, ...prev];
-            return next.slice(0, MAX_FEED);
-          });
+        } else if (msg.type === "new") {
+          setSignals((prev) => [...msg.data, ...prev].slice(0, MAX_FEED));
+        } else if (msg.type === "update") {
+          // Merge copier_status/reason/spend into already-displayed rows
+          const patchMap = new Map(msg.data.map((a) => [a.id, a]));
+          setSignals((prev) =>
+            prev.map((s) => (patchMap.has(s.id) ? { ...s, ...patchMap.get(s.id) } : s))
+          );
         }
       };
 

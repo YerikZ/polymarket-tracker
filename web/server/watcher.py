@@ -149,8 +149,21 @@ async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> No
         if copy_trader:
             copy_trader.update_scores(scores)
 
-        # Signal callback
-        async def on_signal(sig):
+        # ── Sync callback (monitor / poll path) ─────────────────────────────
+        # monitor.run() executes in a thread-pool thread (asyncio.to_thread),
+        # so its callback must be synchronous — awaiting an async coroutine
+        # inside a plain thread silently creates and discards the coroutine.
+        def sync_on_signal(sig):
+            state.last_signal_at = datetime.now(timezone.utc).isoformat()
+            if copy_trader:
+                result = copy_trader.copy(sig)
+                if sig.alert_id:
+                    storage.update_alert_copier_result(
+                        sig.alert_id, result.status, result.reason, result.spend_usdc
+                    )
+
+        # ── Async callback (stream path) ─────────────────────────────────────
+        async def async_on_signal(sig):
             async with state._lock:
                 state.last_signal_at = datetime.now(timezone.utc).isoformat()
             if copy_trader:
@@ -179,7 +192,7 @@ async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> No
                 min_position_usdc=min_position_usdc,
                 wallet_refresh_interval=wallet_refresh_interval,
             )
-            await stream.run(on_signal)
+            await stream.run(async_on_signal)
         else:
             async with state._lock:
                 state.mode = "poll"
@@ -193,7 +206,7 @@ async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> No
                 min_position_usdc=min_position_usdc,
                 max_signal_age=max_signal_age,
             )
-            await asyncio.to_thread(monitor.run, on_signal)
+            await asyncio.to_thread(monitor.run, sync_on_signal)
 
     except asyncio.CancelledError:
         logger.info("Watcher task cancelled.")
