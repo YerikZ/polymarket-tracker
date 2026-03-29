@@ -39,19 +39,16 @@ function NumInput({
   value,
   onChange,
   step,
-  min,
 }: {
   value: number | undefined;
   onChange: (v: number) => void;
-  step?: number;
-  min?: number;
+  step?: number | "any";
 }) {
   return (
     <input
       type="number"
       value={value ?? ""}
-      step={step ?? 1}
-      min={min ?? 0}
+      step={step ?? "any"}
       onChange={(e) => onChange(Number(e.target.value))}
       className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-xs text-zinc-100 w-full focus:outline-none focus:border-zinc-500"
     />
@@ -220,19 +217,19 @@ export function SettingsForm() {
       {/* General */}
       <Section title="General">
         <Field label="Top N wallets" hint="How many top leaderboard wallets to track">
-          <NumInput value={local.top_n} onChange={(v) => set("top_n", v)} min={1} />
+          <NumInput value={local.top_n} onChange={(v) => set("top_n", v)} />
         </Field>
         <Field label="Poll interval (s)" hint="Seconds between polling cycles">
-          <NumInput value={local.poll_interval} onChange={(v) => set("poll_interval", v)} min={30} />
+          <NumInput value={local.poll_interval} onChange={(v) => set("poll_interval", v)} />
         </Field>
         <Field label="Min position size (USDC)" hint="Ignore signals below this size">
           <NumInput value={local.min_position_usdc} onChange={(v) => set("min_position_usdc", v)} step={0.1} />
         </Field>
         <Field label="Wallet refresh interval (s)">
-          <NumInput value={local.wallet_refresh_interval} onChange={(v) => set("wallet_refresh_interval", v)} min={60} />
+          <NumInput value={local.wallet_refresh_interval} onChange={(v) => set("wallet_refresh_interval", v)} />
         </Field>
         <Field label="Max signal age (s)" hint="Ignore signals older than this">
-          <NumInput value={local.max_signal_age} onChange={(v) => set("max_signal_age", v)} min={60} />
+          <NumInput value={local.max_signal_age} onChange={(v) => set("max_signal_age", v)} />
         </Field>
         <Field label="Log level">
           <select
@@ -275,39 +272,39 @@ export function SettingsForm() {
 
         {sizingMode === "fixed" && (
           <Field label="Fixed USDC" hint="Baseline spend per trade">
-            <NumInput value={ct.fixed_usdc} onChange={(v) => setCt("fixed_usdc", v)} step={0.5} min={0.1} />
+            <NumInput value={ct.fixed_usdc} onChange={(v) => setCt("fixed_usdc", v)} step={0.5} />
           </Field>
         )}
         {sizingMode === "fixed" && (
           <Field label="Reference trade USDC" hint="Reference signal size for scaling">
-            <NumInput value={ct.reference_trade_usdc} onChange={(v) => setCt("reference_trade_usdc", v)} step={1} min={1} />
+            <NumInput value={ct.reference_trade_usdc} onChange={(v) => setCt("reference_trade_usdc", v)} step={1} />
           </Field>
         )}
         {sizingMode === "pct_balance" && (
           <Field label="% of balance (0–1)" hint="e.g. 0.02 = 2%">
-            <NumInput value={ct.pct_balance} onChange={(v) => setCt("pct_balance", v)} step={0.005} min={0.001} />
+            <NumInput value={ct.pct_balance} onChange={(v) => setCt("pct_balance", v)} step={0.005} />
           </Field>
         )}
         {sizingMode === "mirror_pct" && (
           <Field label="Mirror % (0–1)" hint="e.g. 0.01 = 1% of original trade">
-            <NumInput value={ct.mirror_pct} onChange={(v) => setCt("mirror_pct", v)} step={0.005} min={0.001} />
+            <NumInput value={ct.mirror_pct} onChange={(v) => setCt("mirror_pct", v)} step={0.005} />
           </Field>
         )}
 
         <Field label="Max trade (USDC)" hint="Hard cap per order">
-          <NumInput value={ct.max_trade_usdc} onChange={(v) => setCt("max_trade_usdc", v)} step={10} min={1} />
+          <NumInput value={ct.max_trade_usdc} onChange={(v) => setCt("max_trade_usdc", v)} step={10} />
         </Field>
         <Field label="Daily limit (USDC)" hint="Total cap for today">
-          <NumInput value={ct.daily_limit_usdc} onChange={(v) => setCt("daily_limit_usdc", v)} step={50} min={1} />
+          <NumInput value={ct.daily_limit_usdc} onChange={(v) => setCt("daily_limit_usdc", v)} step={50} />
         </Field>
         <Field label="Slippage" hint="Added to price for better fill">
-          <NumInput value={ct.slippage} onChange={(v) => setCt("slippage", v)} step={0.005} min={0} />
+          <NumInput value={ct.slippage} onChange={(v) => setCt("slippage", v)} step={0.005} />
         </Field>
         <Field label="Min score (0–100)" hint="Skip wallets below this score">
-          <NumInput value={ct.min_score} onChange={(v) => setCt("min_score", v)} min={0} />
+          <NumInput value={ct.min_score} onChange={(v) => setCt("min_score", v)} />
         </Field>
         <Field label="Min order size cap" hint="Skip if market minimum exceeds this">
-          <NumInput value={ct.min_order_size_cap} onChange={(v) => setCt("min_order_size_cap", v)} step={0.5} min={0} />
+          <NumInput value={ct.min_order_size_cap} onChange={(v) => setCt("min_order_size_cap", v)} step={0.5} />
         </Field>
         <Field label="Scale by wallet tier">
           <div className="flex items-center gap-2 pt-1">
