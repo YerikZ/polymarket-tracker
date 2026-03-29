@@ -21,6 +21,7 @@ from typing import Generator
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.sql
 from psycopg2.pool import ThreadedConnectionPool
 
 logger = logging.getLogger(__name__)
@@ -141,6 +142,25 @@ def init_pool(dsn: str, minconn: int = 1, maxconn: int = 10) -> None:
 
 def apply_schema() -> None:
     """Create all tables / indexes if they do not exist yet (idempotent)."""
+    # REFRESH COLLATION VERSION must run outside a transaction block.
+    conn = _pool.getconn()
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("SELECT current_database()")
+            dbname = cur.fetchone()[0]
+            cur.execute(
+                psycopg2.sql.SQL("ALTER DATABASE {} REFRESH COLLATION VERSION").format(
+                    psycopg2.sql.Identifier(dbname)
+                )
+            )
+        conn.autocommit = False
+    except Exception as exc:
+        logger.debug("Collation refresh skipped: %s", exc)
+        conn.autocommit = False
+    finally:
+        _pool.putconn(conn)
+
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(_SCHEMA)
