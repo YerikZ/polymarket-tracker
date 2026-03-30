@@ -29,18 +29,21 @@ async def put_settings(body: SettingsUpdate, request: Request):
     storage = request.app.state.storage
     updates = body.model_dump()
 
+    seed_cfg = request.app.state.seed_cfg
     await asyncio.to_thread(settings_helpers.put_settings, storage, updates)
 
     # Auto-restart watcher if it's running
     state = request.app.state.watcher_state
     if state.status == "running":
         await stop_watcher(state)
-        new_cfg = storage.get_settings()
+        new_cfg = await asyncio.to_thread(
+            settings_helpers.get_settings, storage, seed_cfg
+        )
         try:
             await start_watcher(state, storage, new_cfg)
         except Exception:
             pass  # Error is stored in state.error
 
     return await asyncio.to_thread(
-        settings_helpers.get_settings_masked, storage, None
+        settings_helpers.get_settings_masked, storage, seed_cfg
     )
