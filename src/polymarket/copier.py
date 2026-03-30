@@ -316,16 +316,25 @@ class CopyTrader:
                 )
                 shares = on_chain
 
-            # Sub-minimum check: market min is typically 5 shares; can't sell below it.
-            # Leave the position open — the user can deal with it manually.
-            if shares < self._cfg.min_order_size_cap:
+            # Fetch the actual market minimum from the CLOB order book.
+            # If shares are below it (e.g. partial GTC fill) we can't sell —
+            # leave the position open rather than erroring.
+            market_min = 1.0
+            try:
+                book = self._get_client().get_order_book(signal.token_id)
+                if book.min_order_size:
+                    market_min = float(book.min_order_size)
+            except Exception as exc:
+                logger.debug("Could not fetch order book min size for sell: %s", exc)
+
+            if shares < market_min:
                 logger.warning(
-                    "Sell skipped for %s: %.4f shares is below min_order_size_cap %.2f",
-                    signal.market_title[:40], shares, self._cfg.min_order_size_cap,
+                    "Sell skipped for %s: %.4f shares below market minimum %.2f — position left open",
+                    signal.market_title[:40], shares, market_min,
                 )
                 return CopyResult(
                     signal=signal, status="skipped",
-                    reason=f"Position too small to sell: {shares:.4f} shares (min: {self._cfg.min_order_size_cap})",
+                    reason=f"Position too small to sell: {shares:.4f} shares (market min: {market_min:.2f})",
                 )
 
         exit_price = round(max(signal.price - self._cfg.slippage, 0.01), 4)
