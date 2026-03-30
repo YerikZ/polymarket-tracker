@@ -267,6 +267,46 @@ class Storage:
                 cur.execute("SELECT * FROM paper_positions ORDER BY id")
                 return [_row_to_dict(r) for r in cur.fetchall()]
 
+    def update_position_prices(self, updates: list[dict]) -> None:
+        """Persist live prices for a batch of positions.
+
+        Each item must have:
+            id, current_price, current_value_usdc,
+            position_status, resolution_outcome, market_closed
+        """
+        if not updates:
+            return
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                psycopg2.extras.execute_values(
+                    cur,
+                    """
+                    UPDATE paper_positions SET
+                        current_price       = data.current_price,
+                        current_value_usdc  = data.current_value_usdc,
+                        position_status     = data.position_status,
+                        resolution_outcome  = data.resolution_outcome,
+                        market_closed       = data.market_closed
+                    FROM (VALUES %s) AS data(
+                        id, current_price, current_value_usdc,
+                        position_status, resolution_outcome, market_closed
+                    )
+                    WHERE paper_positions.id = data.id::bigint
+                    """,
+                    [
+                        (
+                            u["id"],
+                            u["current_price"],
+                            u["current_value_usdc"],
+                            u["position_status"],
+                            u["resolution_outcome"],
+                            u["market_closed"],
+                        )
+                        for u in updates
+                    ],
+                    template="(%s, %s::numeric, %s::numeric, %s, %s, %s::boolean)",
+                )
+
     def update_position_statuses(self, updates: list[dict]) -> int:
         """Persist resolution status for a list of positions.
 

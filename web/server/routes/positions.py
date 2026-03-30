@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import date
 
 from fastapi import APIRouter, Query, Request
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["positions"])
 
 
@@ -20,6 +22,74 @@ async def get_positions(
     elif mode == "live":
         positions = [p for p in positions if not p.get("is_dry_run")]
     return positions
+
+
+@router.post("/positions/refresh")
+async def refresh_positions(request: Request):
+    """Fetch live CLOB prices for all open positions, persist them, and return
+    the updated positions list.  No auth needed — midpoint is a public endpoint.
+    """
+    storage = request.app.state.storage
+    positions = await asyncio.to_thread(storage.get_paper_positions)
+
+    # Separate open from already-resolved
+    open_positions = [p for p in positions if p.get("position_status") == "open"]
+    open_token_ids = list({
+        p["token_id"] for p in open_positions if p.get("token_id")
+    })
+
+    # Fetch live midpoint prices for open token IDs (public CLOB endpoint)
+    prices: dict[str, float] = {}
+    if open_token_ids:
+        def _fetch_prices() -> dict[str, float]:
+            from polymarket.client import PolymarketClient
+            client = PolymarketClient(request_delay=0.05, max_retries=2)
+            return client.token_prices(open_token_ids)
+
+        try:
+            prices = await asyncio.to_thread(_fetch_prices)
+        except Exception as exc:
+            logger.warning("Price fetch failed during refresh: %s", exc)
+
+    # Build update records for every position
+    updates = []
+    for pos in positions:
+        tid    = pos.get("token_id", "")
+        status = pos.get("position_status", "open")
+        shares = float(pos.get("shares") or 0)
+
+        if status == "won":
+            cur_price = 1.0
+        elif status == "lost":
+            cur_price = 0.0
+        elif tid in prices:
+            cur_price = prices[tid]
+            # Auto-resolve based on price threshold
+            if cur_price >= 0.97:
+                status = "won"
+                cur_price = 1.0
+            elif cur_price <= 0.03:
+                status = "lost"
+                cur_price = 0.0
+        else:
+            continue  # price unavailable — leave row untouched
+
+        updates.append({
+            "id":                 pos["id"],
+            "current_price":      round(cur_price, 6),
+            "current_value_usdc": round(cur_price * shares, 4),
+            "position_status":    status,
+            "resolution_outcome": pos.get("resolution_outcome", ""),
+            "market_closed":      bool(pos.get("market_closed", False)),
+        })
+
+    if updates:
+        await asyncio.to_thread(storage.update_position_prices, updates)
+        logger.info("Refreshed prices for %d positions (%d open token IDs fetched)",
+                    len(updates), len(open_token_ids))
+
+    # Return the freshly-read positions after DB update
+    return await asyncio.to_thread(storage.get_paper_positions)
 
 
 @router.get("/pnl/summary")
