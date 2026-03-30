@@ -114,16 +114,16 @@ def put_settings(storage: "Storage", updates: dict) -> dict:
         else:
             merged[k] = v
 
-    # Top-level sensitive fields: blank string = keep existing value
+    # Top-level sensitive fields: blank string or masked sentinel = keep existing value
     for key in _SENSITIVE:
-        if key in updates and updates[key] == "":
+        if key in updates and updates[key] in ("", "***"):
             merged[key] = existing.get(key, "")
 
     # Nested copy_trading sensitive fields
     ct_updates = updates.get("copy_trading", {})
     ct_existing = existing.get("copy_trading", {})
     for key in _SENSITIVE_NESTED:
-        if key in ct_updates and ct_updates[key] == "":
+        if key in ct_updates and ct_updates[key] in ("", "***"):
             merged.setdefault("copy_trading", {})[key] = ct_existing.get(key, "")
 
     storage.put_settings(merged)
