@@ -290,13 +290,36 @@ class CopyTrader:
                 reason="No open position to sell — we never bought this market",
             )
 
-        shares     = float(pos["shares"])
+        shares         = float(pos["shares"])
+        pos_is_dry_run = pos.get("is_dry_run", True)
+
+        # For live positions, verify we actually hold the tokens on-chain.
+        # GTC buy orders are recorded immediately but may never be filled —
+        # attempting to sell unfilled shares causes a 400 "balance: 0" error.
+        if not pos_is_dry_run:
+            on_chain = self._get_token_balance(signal.token_id)
+            if on_chain == 0.0:
+                logger.warning(
+                    "Sell skipped for %s: on-chain token balance is 0 "
+                    "(buy order was likely never filled). Cancelling DB position.",
+                    signal.market_title[:40],
+                )
+                self._storage.cancel_paper_position(pos["id"])
+                return CopyResult(
+                    signal=signal, status="skipped",
+                    reason="Buy order never filled — no tokens to sell",
+                )
+            if on_chain > 0.0 and on_chain < shares:
+                logger.warning(
+                    "On-chain balance %.4f < recorded shares %.4f for %s — selling actual balance",
+                    on_chain, shares, signal.token_id[:16],
+                )
+                shares = on_chain
+
         exit_price = round(max(signal.price - self._cfg.slippage, 0.01), 4)
         proceeds   = round(shares * exit_price, 2)
         cost       = float(pos["spend_usdc"])
         pnl        = round(proceeds - cost, 2)
-
-        pos_is_dry_run = pos.get("is_dry_run", True)
         label = "DRY RUN SELL" if pos_is_dry_run else "SELL"
         logger.info(
             "[%s] Closing %.2f shares of %s @ $%.4f → proceeds $%.2f  P&L %+.2f",
@@ -380,6 +403,22 @@ class CopyTrader:
         except Exception as exc:
             logger.warning("Balance fetch failed: %s", exc)
             return 0.0
+
+    def _get_token_balance(self, token_id: str) -> float:
+        """Return actual on-chain conditional token balance (shares held in wallet).
+
+        Returns -1.0 if the query fails so callers can decide to proceed anyway.
+        """
+        try:
+            _, _, _, _, _, BalanceAllowanceParams, AssetType = _clob_imports()
+            resp = self._get_client().get_balance_allowance(
+                BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=token_id)
+            )
+            raw = resp.get("balance", 0)
+            return float(raw) / 1e6
+        except Exception as exc:
+            logger.warning("Token balance fetch failed for %s…: %s", token_id[:16], exc)
+            return -1.0  # unknown — let sell proceed rather than silently drop it
 
     def _compute_spend(self, signal: Signal, balance: float) -> float:
         mode = self._cfg.sizing_mode

@@ -244,6 +244,21 @@ class Storage:
                     (exit_price, exit_usdc, position_id),
                 )
 
+    def cancel_paper_position(self, position_id: int) -> None:
+        """Mark a position as cancelled — buy order was submitted but never filled."""
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE paper_positions
+                       SET position_status    = 'cancelled',
+                           resolution_outcome = 'unfilled',
+                           closed_at          = NOW()
+                     WHERE id = %s
+                    """,
+                    (position_id,),
+                )
+
     def append_paper_position(self, pos: dict) -> None:
         with db.get_conn() as conn:
             with conn.cursor() as cur:
