@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Request
+
+from web.server import settings as settings_helpers
 
 router = APIRouter(prefix="/api/watcher", tags=["watcher"])
 
@@ -9,7 +13,8 @@ router = APIRouter(prefix="/api/watcher", tags=["watcher"])
 async def start(request: Request):
     state = request.app.state.watcher_state
     storage = request.app.state.storage
-    cfg = storage.get_settings()
+    seed_cfg = request.app.state.seed_cfg
+    cfg = await asyncio.to_thread(settings_helpers.get_settings, storage, seed_cfg)
     if not cfg:
         raise HTTPException(400, "No settings configured. Visit /settings first.")
     from web.server.watcher import start_watcher

@@ -66,7 +66,13 @@ def get_settings(storage: "Storage", seed_cfg: dict | None = None) -> dict:
     # Scrub any masked sentinels ("***") that may have been written to the DB
     # by earlier saves from the UI before the put_settings guard was added.
     # Sentinel values are not real credentials — drop them so seed_cfg wins.
-    _scrub_sentinels(stored)
+    # If anything was removed, write the clean copy back so the DB heals itself.
+    stored_clean = copy.deepcopy(stored)
+    _scrub_sentinels(stored_clean)
+    if stored_clean != stored:
+        logger.warning("Scrubbed '***' sentinel(s) from stored settings — rewriting clean copy to DB.")
+        storage.put_settings(stored_clean)
+    stored = stored_clean
 
     # Build the canonical config: defaults ← seed_cfg ← stored (highest priority)
     merged = copy.deepcopy(_DEFAULTS)
