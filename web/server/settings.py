@@ -63,6 +63,11 @@ def get_settings(storage: "Storage", seed_cfg: dict | None = None) -> dict:
     """
     stored = storage.get_settings()
 
+    # Scrub any masked sentinels ("***") that may have been written to the DB
+    # by earlier saves from the UI before the put_settings guard was added.
+    # Sentinel values are not real credentials — drop them so seed_cfg wins.
+    _scrub_sentinels(stored)
+
     # Build the canonical config: defaults ← seed_cfg ← stored (highest priority)
     merged = copy.deepcopy(_DEFAULTS)
     if seed_cfg:
@@ -159,3 +164,19 @@ def _sanitise_for_seed(cfg: dict) -> dict:
     """Strip keys that don't belong in the DB (e.g. data_dir, database_url)."""
     skip = {"data_dir", "database_url"}
     return {k: v for k, v in cfg.items() if k not in skip}
+
+
+def _scrub_sentinels(stored: dict) -> None:
+    """Remove '***' mask values from stored config in-place.
+
+    If the UI saved '***' as a sensitive field value (before the put_settings
+    guard was in place), drop the key so the seed_cfg / real value wins during
+    the merge in get_settings().
+    """
+    for key in _SENSITIVE:
+        if stored.get(key) == "***":
+            del stored[key]
+    ct = stored.get("copy_trading", {})
+    for key in _SENSITIVE_NESTED:
+        if ct.get(key) == "***":
+            del ct[key]
