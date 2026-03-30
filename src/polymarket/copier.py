@@ -292,10 +292,10 @@ class CopyTrader:
 
         shares         = float(pos["shares"])
         pos_is_dry_run = pos.get("is_dry_run", True)
+        pos_is_shadow  = pos_is_dry_run and not self._cfg.dry_run
 
         # For live positions, verify we actually hold the tokens on-chain.
-        # GTC buy orders are recorded immediately but may never be filled —
-        # attempting to sell unfilled shares causes a 400 "balance: 0" error.
+        # GTC buy orders are recorded immediately but may never be filled.
         if not pos_is_dry_run:
             on_chain = self._get_token_balance(signal.token_id)
             if on_chain == 0.0:
@@ -316,45 +316,57 @@ class CopyTrader:
                 )
                 shares = on_chain
 
+            # Sub-minimum check: market min is typically 5 shares; can't sell below it.
+            # Leave the position open — the user can deal with it manually.
+            if shares < self._cfg.min_order_size_cap:
+                logger.warning(
+                    "Sell skipped for %s: %.4f shares is below min_order_size_cap %.2f",
+                    signal.market_title[:40], shares, self._cfg.min_order_size_cap,
+                )
+                return CopyResult(
+                    signal=signal, status="skipped",
+                    reason=f"Position too small to sell: {shares:.4f} shares (min: {self._cfg.min_order_size_cap})",
+                )
+
         exit_price = round(max(signal.price - self._cfg.slippage, 0.01), 4)
         proceeds   = round(shares * exit_price, 2)
         cost       = float(pos["spend_usdc"])
         pnl        = round(proceeds - cost, 2)
-        label = "DRY RUN SELL" if pos_is_dry_run else "SELL"
+        label      = "DRY RUN SELL" if pos_is_dry_run else "SELL"
+        refund     = float(pos.get("spend_usdc") or 0)
+
         logger.info(
-            "[%s] Closing %.2f shares of %s @ $%.4f → proceeds $%.2f  P&L %+.2f",
+            "[%s] Closing %.4f shares of %s @ $%.4f → proceeds $%.2f  P&L %+.2f",
             label, shares, signal.market_title[:40], exit_price, proceeds, pnl,
         )
 
-        # Close the position in DB
-        self._storage.close_paper_position(pos["id"], exit_price, proceeds)
-
-        # Refund the original spend (not proceeds) back to the daily counter.
-        # This restores exactly the headroom that was consumed when we bought.
-        # Shadow positions (is_dry_run=True while in live mode) never charged daily_spend — no refund.
-        pos_is_shadow  = pos_is_dry_run and not self._cfg.dry_run
-        refund = float(pos.get("spend_usdc") or 0)
-        if refund > 0 and not pos_is_shadow:
-            self._storage.record_daily_spend(date.today().isoformat(), -refund)
-            logger.info(
-                "Daily spend refunded $%.2f (original cost) on sell — new headroom: $%.2f",
-                refund,
-                max(0.0, self._cfg.daily_limit_usdc - self._storage.get_daily_spend(date.today().isoformat())),
-            )
-
-        # Re-evaluate cap live so restored headroom can bring us back to live mode
-        spent_today = self._storage.get_daily_spend(date.today().isoformat())
-        cap_hit = not self._cfg.dry_run and spent_today >= self._cfg.daily_limit_usdc
-        if pos_is_dry_run or cap_hit:
+        # Dry-run / shadow: close DB immediately — no real order needed.
+        if pos_is_dry_run:
+            self._storage.close_paper_position(pos["id"], exit_price, proceeds)
+            if refund > 0 and not pos_is_shadow:
+                self._storage.record_daily_spend(date.today().isoformat(), -refund)
             return CopyResult(
                 signal=signal,
-                status="dry_run" if pos_is_dry_run else "shadow",
-                reason=f"{label}: closed {shares:.2f} shares @ ${exit_price:.4f} → ${proceeds:.2f} (P&L {pnl:+.2f})",
-                spend_usdc=-proceeds,   # negative = credit
+                status="dry_run",
+                reason=f"{label}: closed {shares:.4f} shares @ ${exit_price:.4f} → ${proceeds:.2f} (P&L {pnl:+.2f})",
+                spend_usdc=-proceeds,
                 price=exit_price,
             )
 
-        return self._place_sell_order(signal, pos, shares, exit_price, proceeds)
+        # Shadow (cap hit in live mode): close DB, don't refund daily_spend (was never charged).
+        spent_today = self._storage.get_daily_spend(date.today().isoformat())
+        cap_hit = spent_today >= self._cfg.daily_limit_usdc
+        if cap_hit:
+            self._storage.close_paper_position(pos["id"], exit_price, proceeds)
+            return CopyResult(
+                signal=signal, status="shadow",
+                reason=f"Shadow SELL: closed {shares:.4f} shares @ ${exit_price:.4f} → ${proceeds:.2f} (P&L {pnl:+.2f})",
+                spend_usdc=-proceeds,
+                price=exit_price,
+            )
+
+        # Live sell: place the order FIRST — close DB and refund only on success.
+        return self._place_sell_order(signal, pos, shares, exit_price, proceeds, refund)
 
     def get_balance(self) -> float:
         """Return USDC balance (public helper for CLI)."""
@@ -498,8 +510,12 @@ class CopyTrader:
             self._pending_buys.discard(signal.condition_id or signal.token_id)
             return CopyResult(signal=signal, status="failed", reason=str(exc))
 
-    def _place_sell_order(self, signal: Signal, pos: dict, shares: float, price: float, proceeds: float) -> CopyResult:
-        """Place a live SELL order on the CLOB for an existing position."""
+    def _place_sell_order(self, signal: Signal, pos: dict, shares: float, price: float, proceeds: float, refund: float) -> CopyResult:
+        """Place a live SELL order on the CLOB.
+
+        Closes the DB position and refunds daily_spend only on success.
+        On failure the position is left open so it can be retried.
+        """
         try:
             ClobClient, OrderArgs, OrderType, _, SELL, _, _ = _clob_imports()
             client = self._get_client()
@@ -516,25 +532,30 @@ class CopyTrader:
             if resp.get("success") or resp.get("orderID"):
                 order_id = resp.get("orderID", "")
                 logger.info(
-                    "Sell order placed: %s — SELL %.2f shares @ $%.4f (≈$%.2f USDC)",
+                    "Sell order placed: %s — SELL %.4f shares @ $%.4f (≈$%.2f USDC)",
                     order_id, shares, price, proceeds,
                 )
-                # Proceeds already credited to daily_spend in _copy_sell
+                # Confirmed — close DB position and restore daily headroom
+                self._storage.close_paper_position(pos["id"], price, proceeds)
+                if refund > 0:
+                    self._storage.record_daily_spend(date.today().isoformat(), -refund)
+                    logger.info(
+                        "Daily spend refunded $%.2f (original cost) — new headroom: $%.2f",
+                        refund,
+                        max(0.0, self._cfg.daily_limit_usdc - self._storage.get_daily_spend(date.today().isoformat())),
+                    )
                 return CopyResult(
                     signal=signal, status="placed",
-                    reason=f"SELL {shares:.2f} shares @ ${price:.4f} (≈${proceeds:.2f} USDC)",
+                    reason=f"SELL {shares:.4f} shares @ ${price:.4f} (≈${proceeds:.2f} USDC)",
                     order_id=order_id,
                     spend_usdc=-proceeds,
                     price=price,
                 )
             else:
                 err = resp.get("errorMsg") or str(resp)
-                logger.error("Sell order rejected: %s", err)
-                # Undo the daily spend credit since the order failed
-                self._storage.record_daily_spend(date.today().isoformat(), proceeds)
+                logger.error("Sell order rejected: %s — position left open for retry", err)
                 return CopyResult(signal=signal, status="failed", reason=f"API rejected: {err}")
 
         except Exception as exc:
-            logger.error("Sell order exception: %s", exc)
-            self._storage.record_daily_spend(date.today().isoformat(), proceeds)
+            logger.error("Sell order exception: %s — position left open for retry", exc)
             return CopyResult(signal=signal, status="failed", reason=str(exc))
