@@ -85,8 +85,14 @@ def get_settings(storage: "Storage", seed_cfg: dict | None = None) -> dict:
                 merged[k] = v
     for k, v in stored.items():
         if k == "copy_trading" and isinstance(v, dict):
-            merged["copy_trading"].update(v)
+            for ck, cv in v.items():
+                # Don't let an empty stored sensitive field shadow a real seed value
+                if ck in _SENSITIVE_NESTED and not cv:
+                    continue
+                merged["copy_trading"][ck] = cv
         else:
+            if k in _SENSITIVE and not v:
+                continue
             merged[k] = v
 
     if not stored:
