@@ -86,7 +86,7 @@ async def ws_signals(websocket: WebSocket):
                 # Track rows that were sent without a copier decision yet
                 for row in new_rows:
                     if row.get("copier_status") is None:
-                        pending_copier[row["id"]] = 5  # retry for up to 5 seconds
+                        pending_copier[row["id"]] = 30  # retry for up to 30 seconds
 
             # 2. Copier updates for recently-sent rows still missing a status
             if pending_copier:

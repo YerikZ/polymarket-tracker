@@ -156,7 +156,13 @@ async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> No
         def sync_on_signal(sig):
             state.last_signal_at = datetime.now(timezone.utc).isoformat()
             if copy_trader:
-                result = copy_trader.copy(sig)
+                try:
+                    result = copy_trader.copy(sig)
+                except Exception as exc:
+                    logger.error("Copier exception for signal %s: %s", sig.alert_id, exc)
+                    if sig.alert_id:
+                        storage.update_alert_copier_result(sig.alert_id, "failed", str(exc), 0.0)
+                    return
                 if sig.alert_id:
                     storage.update_alert_copier_result(
                         sig.alert_id, result.status, result.reason, result.spend_usdc
@@ -167,7 +173,16 @@ async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> No
             async with state._lock:
                 state.last_signal_at = datetime.now(timezone.utc).isoformat()
             if copy_trader:
-                result = await asyncio.to_thread(copy_trader.copy, sig)
+                try:
+                    result = await asyncio.to_thread(copy_trader.copy, sig)
+                except Exception as exc:
+                    logger.error("Copier exception for signal %s: %s", sig.alert_id, exc)
+                    if sig.alert_id:
+                        await asyncio.to_thread(
+                            storage.update_alert_copier_result,
+                            sig.alert_id, "failed", str(exc), 0.0,
+                        )
+                    return
                 if sig.alert_id:
                     await asyncio.to_thread(
                         storage.update_alert_copier_result,

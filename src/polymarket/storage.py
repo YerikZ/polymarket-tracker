@@ -150,7 +150,15 @@ class Storage:
                     d,
                 )
                 row = cur.fetchone()
-                return int(row[0]) if row else 0
+                if row:
+                    return int(row[0])
+                # ON CONFLICT DO NOTHING — row already existed; return its id
+                cur.execute(
+                    "SELECT id FROM alerts WHERE transaction_hash = %s",
+                    (d["transaction_hash"],),
+                )
+                existing = cur.fetchone()
+                return int(existing[0]) if existing else 0
 
     def update_alert_copier_result(
         self,

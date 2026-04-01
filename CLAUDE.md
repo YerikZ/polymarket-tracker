@@ -15,3 +15,13 @@ Use a concise, descriptive commit message that reflects the change (e.g. `fix: c
 - Partial work mid-task (wait until the task is complete)
 
 Stage only relevant files (`git add -u` plus any new source files). Never commit `config.yaml`.
+
+## Docker
+
+After making any code changes, always rebuild and restart the web container:
+
+```bash
+docker compose up --build -d web
+```
+
+`docker compose restart web` is not sufficient — the code is baked into the image and requires a full rebuild.
