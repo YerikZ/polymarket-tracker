@@ -87,6 +87,9 @@ class CopierConfig:
     min_score: float = 50.0             # skip wallets with score below this (0 = disable)
     score_scale_size: bool = True        # scale position size by wallet's copy_size_pct
 
+    # Single-wallet mode
+    single_wallet_mode: bool = False     # if True, copy only the one most-consistent wallet
+
 
 class CopyTrader:
     def __init__(self, config: CopierConfig, storage: Storage):
@@ -101,11 +104,35 @@ class CopyTrader:
         # has written to the DB.
         self._buy_lock = threading.Lock()
         self._pending_buys: set[str] = set()  # market keys currently being processed
+        self._target_wallet: str | None = None  # set in single_wallet_mode
 
     def update_scores(self, scores: dict[str, WalletScore]) -> None:
         """Called by cmd_watch after computing/refreshing wallet scores."""
         self._scores = scores
+        if self._cfg.single_wallet_mode:
+            self._target_wallet = self._select_target_wallet(scores)
         logger.info("Score cache updated for %d wallets.", len(scores))
+
+    @staticmethod
+    def _select_target_wallet(scores: dict[str, WalletScore]) -> str | None:
+        """Pick the most consistent wallet from scored candidates."""
+        eligible = [
+            ws for ws in scores.values()
+            if ws.copy_size_pct > 0 and not ws.insufficient_data
+        ]
+        if not eligible:
+            logger.warning("Single-wallet mode: no eligible wallets found.")
+            return None
+
+        def consistency(ws: WalletScore) -> float:
+            return ws.s2_temporal_consistency + ws.r2_sharpe + ws.r3_recency_trend + ws.s3_independence
+
+        best = max(eligible, key=consistency)
+        logger.info(
+            "Single-wallet mode: selected %s (tier %s, consistency=%.1f, total=%.0f/100)",
+            best.address, best.copy_tier, consistency(best), best.total,
+        )
+        return best.address
 
     def is_daily_limit_reached(self) -> bool:
         """Return True if today's spend has hit or exceeded the daily cap."""
@@ -123,6 +150,19 @@ class CopyTrader:
                 signal=signal, status="skipped",
                 reason="No token_id in signal — cannot place order without ERC-1155 asset ID",
             )
+
+        # Single-wallet mode: only act on signals from the chosen target
+        if self._cfg.single_wallet_mode:
+            if not self._target_wallet:
+                return CopyResult(
+                    signal=signal, status="skipped",
+                    reason="Single-wallet mode: no target wallet selected yet",
+                )
+            if signal.wallet_address != self._target_wallet:
+                return CopyResult(
+                    signal=signal, status="skipped",
+                    reason="Single-wallet mode: not target wallet",
+                )
 
         if signal.side == "SELL":
             return self._copy_sell(signal)

@@ -383,6 +383,17 @@ export function SettingsForm() {
             </span>
           </div>
         </Field>
+        <Field label="Single-wallet mode" hint="Analyze all wallets but copy only the one with the highest consistency score (temporal + Sharpe + trend + independence)">
+          <div className="flex items-center gap-2 pt-1">
+            <Toggle
+              checked={ct.single_wallet_mode ?? false}
+              onChange={(v) => setCt("single_wallet_mode", v)}
+            />
+            <span className="text-xs text-zinc-400">
+              {ct.single_wallet_mode ? "Enabled — one target wallet" : "Disabled — copy all qualifying"}
+            </span>
+          </div>
+        </Field>
         <Field label="Blocked keywords" hint="Enter to add · Backspace to remove last">
           <TagInput
             tags={ct.blocked_keywords ?? []}

@@ -41,6 +41,7 @@ _DEFAULTS: dict = {
         "slippage": 0.01,
         "min_score": 50.0,
         "score_scale_size": True,
+        "single_wallet_mode": False,
         "blocked_keywords": [],
         "private_key": "",
         "funder": "",
@@ -170,6 +171,7 @@ def build_copier_config(cfg: dict) -> "CopierConfig":
         blocked_keywords=list(ct.get("blocked_keywords", [])),
         min_score=float(ct.get("min_score", 50.0)),
         score_scale_size=bool(ct.get("score_scale_size", True)),
+        single_wallet_mode=bool(ct.get("single_wallet_mode", False)),
     )
 
 
