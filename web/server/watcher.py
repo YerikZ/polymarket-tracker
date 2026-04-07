@@ -26,6 +26,8 @@ class WatcherState:
     last_signal_at: str | None = None
     error: str | None = None
     copy_enabled: bool = False
+    target_wallet: str | None = None       # address of the single chosen wallet (single_wallet_mode)
+    target_wallet_username: str | None = None
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
 
@@ -72,6 +74,8 @@ async def stop_watcher(state: WatcherState) -> None:
         state.status = "stopped"
         state.wallets_tracked = 0
         state.mode = ""
+        state.target_wallet = None
+        state.target_wallet_username = None
 
 
 async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> None:
@@ -148,6 +152,11 @@ async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> No
         scores = await asyncio.to_thread(scorer.score_all, stats_list, storage)
         if copy_trader:
             copy_trader.update_scores(scores)
+            if copy_trader._target_wallet:
+                tw = next((w for w in wallets if w.address == copy_trader._target_wallet), None)
+                async with state._lock:
+                    state.target_wallet = copy_trader._target_wallet
+                    state.target_wallet_username = tw.username if tw else None
 
         # ── Sync callback (monitor / poll path) ─────────────────────────────
         # monitor.run() executes in a thread-pool thread (asyncio.to_thread),

@@ -95,6 +95,8 @@ export interface WatcherStatus {
   wallets_tracked: number;
   last_signal_at: string | null;
   copy_enabled: boolean;
+  target_wallet: string | null;
+  target_wallet_username: string | null;
   error: string | null;
 }
 

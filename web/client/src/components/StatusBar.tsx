@@ -54,6 +54,14 @@ export function StatusBar() {
               <span className="text-emerald-400">
                 {status.mode === "stream" ? "Stream" : "Poll"} · {status.wallets_tracked} wallets
               </span>
+              {status.target_wallet && (
+                <span
+                  className="px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 border border-violet-500/30 text-[10px] font-semibold tracking-wide"
+                  title={status.target_wallet}
+                >
+                  → {status.target_wallet_username ?? status.target_wallet.slice(0, 8) + "…"}
+                </span>
+              )}
             </>
           ) : isStarting ? (
             <>
