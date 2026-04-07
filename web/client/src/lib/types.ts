@@ -125,6 +125,7 @@ export interface Settings {
     slippage?: number;
     min_score?: number;
     score_scale_size?: boolean;
+    single_wallet_mode?: boolean;
     blocked_keywords?: string[];
   };
 }
