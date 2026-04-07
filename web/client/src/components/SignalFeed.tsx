@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useSignals } from "../hooks/useSignals";
+import { useWatcherStatus } from "../hooks/useWatcherStatus";
 import { TierBadge } from "./TierBadge";
 import { fmtPrice, fmtUsd, timeAgo } from "../lib/utils";
 import { useQuery } from "@tanstack/react-query";
@@ -71,6 +72,7 @@ function ActionBadge({
 export function SignalFeed() {
   const signals = useSignals();
   const [sideFilter, setSideFilter] = useState<SideFilter>("ALL");
+  const { data: status } = useWatcherStatus();
 
   const { data: wallets = [] } = useQuery<Wallet[]>({
     queryKey: ["wallets"],
@@ -80,8 +82,11 @@ export function SignalFeed() {
 
   const tierMap = Object.fromEntries(wallets.map((w) => [w.address, w.tier]));
 
+  const targetWallet = status?.target_wallet ?? null;
   const filtered = signals.filter(
-    (s) => sideFilter === "ALL" || s.side === sideFilter
+    (s) =>
+      (sideFilter === "ALL" || s.side === sideFilter) &&
+      (!targetWallet || s.wallet_address === targetWallet)
   );
 
   return (
