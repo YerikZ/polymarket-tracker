@@ -16,28 +16,33 @@ async def get_alerts(
     request: Request,
     limit: int = Query(50, ge=1, le=500),
     since_id: int = Query(0, ge=0),
+    wallet_address: str = Query("", alias="wallet_address"),
 ):
     storage = request.app.state.storage
-    alerts = await asyncio.to_thread(_fetch_alerts, storage, limit, since_id)
+    alerts = await asyncio.to_thread(_fetch_alerts, storage, limit, since_id, wallet_address or None)
     return alerts
 
 
-def _fetch_alerts(storage, limit: int, since_id: int) -> list[dict]:
+def _fetch_alerts(storage, limit: int, since_id: int, wallet_address: str | None = None) -> list[dict]:
     import psycopg2.extras
     from polymarket import db
 
     with db.get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            conditions = []
+            params: list = []
             if since_id:
-                cur.execute(
-                    "SELECT * FROM alerts WHERE id > %s ORDER BY id DESC LIMIT %s",
-                    (since_id, limit),
-                )
-            else:
-                cur.execute(
-                    "SELECT * FROM alerts ORDER BY id DESC LIMIT %s",
-                    (limit,),
-                )
+                conditions.append("id > %s")
+                params.append(since_id)
+            if wallet_address:
+                conditions.append("wallet_address = %s")
+                params.append(wallet_address)
+            where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+            params.append(limit)
+            cur.execute(
+                f"SELECT * FROM alerts {where} ORDER BY id DESC LIMIT %s",
+                params,
+            )
             from polymarket.storage import _row_to_dict
             return [_row_to_dict(r) for r in cur.fetchall()]
 

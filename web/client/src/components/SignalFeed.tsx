@@ -4,7 +4,7 @@ import { useWatcherStatus } from "../hooks/useWatcherStatus";
 import { TierBadge } from "./TierBadge";
 import { fmtPrice, fmtUsd, timeAgo } from "../lib/utils";
 import { useQuery } from "@tanstack/react-query";
-import type { CopierStatus, Wallet } from "../lib/types";
+import type { Alert, CopierStatus, Wallet } from "../lib/types";
 
 type SideFilter = "ALL" | "BUY" | "SELL";
 
@@ -83,7 +83,25 @@ export function SignalFeed() {
   const tierMap = Object.fromEntries(wallets.map((w) => [w.address, w.tier]));
 
   const targetWallet = status?.target_wallet ?? null;
-  const filtered = signals.filter(
+
+  // When a target wallet is active, also fetch its historical signals via REST
+  // (the WS only seeds the last 20 globally, which may not include the target wallet).
+  const { data: targetHistory = [] } = useQuery<Alert[]>({
+    queryKey: ["alerts-wallet", targetWallet],
+    queryFn: () =>
+      fetch(`/api/alerts?wallet_address=${targetWallet}&limit=100`).then((r) => r.json()),
+    enabled: !!targetWallet,
+    staleTime: 30_000,
+  });
+
+  // Merge WS signals + target wallet history, deduplicate by id, sort newest first.
+  const mergedSignals = targetWallet
+    ? Array.from(
+        new Map([...signals, ...targetHistory].map((s) => [s.id, s])).values()
+      ).sort((a, b) => b.id - a.id)
+    : signals;
+
+  const filtered = mergedSignals.filter(
     (s) =>
       (sideFilter === "ALL" || s.side === sideFilter) &&
       (!targetWallet || s.wallet_address === targetWallet)
