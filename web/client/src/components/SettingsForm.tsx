@@ -394,6 +394,31 @@ export function SettingsForm() {
             </span>
           </div>
         </Field>
+        {ct.single_wallet_mode && (
+          <>
+            <Field label="Enable top-up" hint="When target wallet buys more of the same market, add to your existing position">
+              <div className="flex items-center gap-2 pt-1">
+                <Toggle
+                  checked={ct.enable_topup ?? false}
+                  onChange={(v) => setCt("enable_topup", v)}
+                />
+                <span className="text-xs text-zinc-400">
+                  {ct.enable_topup ? "Enabled" : "Disabled"}
+                </span>
+              </div>
+            </Field>
+            {ct.enable_topup && (
+              <>
+                <Field label="Max top-ups per market" hint="0 = unlimited additional buys per market">
+                  <NumInput value={ct.max_topups ?? 2} onChange={(v) => setCt("max_topups", v)} step={1} min={0} />
+                </Field>
+                <Field label="Top-up size multiplier" hint="1.0 = same size each round · 0.5 = halving (1st: 100% → 2nd: 50% → 3rd: 25%)">
+                  <NumInput value={ct.topup_size_multiplier ?? 1.0} onChange={(v) => setCt("topup_size_multiplier", v)} step={0.1} min={0.1} max={2.0} />
+                </Field>
+              </>
+            )}
+          </>
+        )}
         <Field label="Blocked keywords" hint="Enter to add · Backspace to remove last">
           <TagInput
             tags={ct.blocked_keywords ?? []}

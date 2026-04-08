@@ -128,6 +128,9 @@ export interface Settings {
     min_score?: number;
     score_scale_size?: boolean;
     single_wallet_mode?: boolean;
+    enable_topup?: boolean;
+    max_topups?: number;
+    topup_size_multiplier?: number;
     blocked_keywords?: string[];
   };
 }

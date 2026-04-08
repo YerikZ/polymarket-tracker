@@ -42,6 +42,9 @@ _DEFAULTS: dict = {
         "min_score": 50.0,
         "score_scale_size": True,
         "single_wallet_mode": False,
+        "enable_topup": False,
+        "max_topups": 2,
+        "topup_size_multiplier": 1.0,
         "blocked_keywords": [],
         "private_key": "",
         "funder": "",
@@ -172,6 +175,9 @@ def build_copier_config(cfg: dict) -> "CopierConfig":
         min_score=float(ct.get("min_score", 50.0)),
         score_scale_size=bool(ct.get("score_scale_size", True)),
         single_wallet_mode=bool(ct.get("single_wallet_mode", False)),
+        enable_topup=bool(ct.get("enable_topup", False)),
+        max_topups=int(ct.get("max_topups", 2)),
+        topup_size_multiplier=float(ct.get("topup_size_multiplier", 1.0)),
     )
 
 

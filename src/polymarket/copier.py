@@ -90,6 +90,11 @@ class CopierConfig:
     # Single-wallet mode
     single_wallet_mode: bool = False     # if True, copy only the one most-consistent wallet
 
+    # Confidence top-up (only active when single_wallet_mode=True)
+    enable_topup: bool = False           # top-up existing positions on repeated target-wallet buys
+    max_topups: int = 2                  # max additional buys per market (0 = unlimited)
+    topup_size_multiplier: float = 1.0   # size multiplier per round (1.0=flat, 0.5=halving decay)
+
 
 class CopyTrader:
     def __init__(self, config: CopierConfig, storage: Storage):
@@ -195,13 +200,25 @@ class CopyTrader:
                     signal=signal, status="skipped",
                     reason=f"Concurrent signal for same market already being processed ({signal.market_title[:40]})",
                 )
-            if self._storage.has_paper_position(signal.condition_id, signal.token_id):
-                return CopyResult(
-                    signal=signal, status="skipped",
-                    reason=f"Already have an open position in this market ({signal.market_title[:40]})",
-                )
+            existing = self._storage.get_open_position(signal.condition_id, signal.token_id)
+            if existing:
+                if self._cfg.single_wallet_mode and self._cfg.enable_topup:
+                    # Release lock before doing the (potentially slow) top-up
+                    pass
+                else:
+                    return CopyResult(
+                        signal=signal, status="skipped",
+                        reason=f"Already have an open position in this market ({signal.market_title[:40]})",
+                    )
+            else:
+                existing = None
             # Reserve the market slot before releasing the lock
-            self._pending_buys.add(market_key)
+            if not existing:
+                self._pending_buys.add(market_key)
+
+        # Route top-up before any further filtering
+        if existing:
+            return self._topup_position(signal, existing)
 
         # Score-based filtering
         wallet_score = self._scores.get(signal.wallet_address)
@@ -320,6 +337,78 @@ class CopyTrader:
 
         # Live execution
         return self._place_order(signal, shares, order_price, spend)
+
+    # ------------------------------------------------------------------
+    # Confidence top-up
+    # ------------------------------------------------------------------
+
+    def _topup_position(self, signal: Signal, existing: dict) -> CopyResult:
+        """Add to an existing open position when the target wallet buys again."""
+        topup_count = existing.get("topup_count", 0)
+
+        # Enforce max_topups limit (0 = unlimited)
+        if self._cfg.max_topups > 0 and topup_count >= self._cfg.max_topups:
+            return CopyResult(
+                signal=signal, status="skipped",
+                reason=f"Max top-ups reached ({self._cfg.max_topups}) for this market",
+            )
+
+        # Compute spend using normal sizing then apply per-round decay multiplier
+        balance = self._get_balance()
+        spend = self._compute_spend(signal, balance)
+        multiplier = self._cfg.topup_size_multiplier ** topup_count  # 1.0, 0.5, 0.25 …
+        spend = round(spend * multiplier, 2)
+
+        # Safety caps
+        spend = min(spend, self._cfg.max_trade_usdc)
+        spent_today = self._storage.get_daily_spend(date.today().isoformat())
+        remaining_daily = self._cfg.daily_limit_usdc - spent_today
+        if spend > remaining_daily:
+            return CopyResult(
+                signal=signal, status="skipped",
+                reason=f"Top-up would exceed daily limit (remaining: ${remaining_daily:.2f})",
+            )
+
+        order_price = round(min(signal.price + self._cfg.slippage, 0.99), 4)
+        shares = round(spend / order_price, 2)
+
+        logger.info(
+            "Top-up #%d for %s: +$%.2f (×%.2f) at %.4f → %.2f shares",
+            topup_count + 1, signal.market_title[:40], spend, multiplier, order_price, shares,
+        )
+
+        if self._cfg.dry_run:
+            self._storage.add_to_position(existing["id"], shares, spend)
+            self._storage.record_daily_spend(date.today().isoformat(), spend)
+            return CopyResult(
+                signal=signal, status="bought", spend_usdc=spend,
+                reason=f"[DRY-RUN] Top-up #{topup_count + 1}: +{shares:.2f} shares @ {order_price:.4f}",
+            )
+
+        return self._place_topup_order(signal, existing, shares, order_price, spend)
+
+    def _place_topup_order(self, signal: Signal, existing: dict, shares: float, price: float, spend: float) -> CopyResult:
+        """Place a live top-up buy order and update the DB position on success."""
+        try:
+            ClobClient, OrderArgs, OrderType, BUY, SELL, BalanceAllowanceParams, AssetType = _clob_imports()
+            client = self._get_client()
+            order_args = OrderArgs(token_id=signal.token_id, price=price, size=shares, side=BUY)
+            signed = client.create_order(order_args)
+            resp = client.post_order(signed, OrderType.GTC)
+        except Exception as exc:
+            logger.error("Top-up order exception: %s", exc)
+            return CopyResult(signal=signal, status="failed", reason=f"Top-up order exception: {exc}")
+
+        if resp.get("success") or resp.get("orderID"):
+            topup_num = existing.get("topup_count", 0) + 1
+            self._storage.add_to_position(existing["id"], shares, spend)
+            self._storage.record_daily_spend(date.today().isoformat(), spend)
+            return CopyResult(
+                signal=signal, status="bought", spend_usdc=spend,
+                reason=f"Top-up #{topup_num}: +{shares:.2f} shares @ {price:.4f} (order {resp.get('orderID','')})",
+            )
+
+        return CopyResult(signal=signal, status="failed", reason=f"Top-up order rejected: {resp}")
 
     def _copy_sell(self, signal: Signal) -> CopyResult:
         """Close our matching position when a tracked wallet sells."""

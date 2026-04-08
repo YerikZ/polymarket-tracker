@@ -235,6 +235,21 @@ class Storage:
                 row = cur.fetchone()
                 return _row_to_dict(row) if row else None
 
+    def add_to_position(self, position_id: int, additional_shares: float, additional_spend: float) -> None:
+        """Atomically increment an existing open position's shares and cost basis."""
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE paper_positions
+                       SET shares      = shares + %s,
+                           spend_usdc  = spend_usdc + %s,
+                           topup_count = topup_count + 1
+                     WHERE id = %s
+                    """,
+                    (additional_shares, additional_spend, position_id),
+                )
+
     def close_paper_position(self, position_id: int, exit_price: float, exit_usdc: float) -> None:
         """Mark a position as manually closed (sell signal), recording exit details."""
         with db.get_conn() as conn:

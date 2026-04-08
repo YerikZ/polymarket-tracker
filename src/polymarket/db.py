@@ -93,7 +93,8 @@ CREATE TABLE IF NOT EXISTS paper_positions (
     -- 'closed' = market closed/settled but resolution unclear
     resolution_outcome  TEXT             NOT NULL DEFAULT '',
     -- label of the winning outcome, e.g. 'Yes', 'No', 'Yokohama F·Marinos'
-    market_closed       BOOLEAN          NOT NULL DEFAULT FALSE
+    market_closed       BOOLEAN          NOT NULL DEFAULT FALSE,
+    topup_count         INTEGER          NOT NULL DEFAULT 0
 );
 -- Migrate existing tables: add new columns if they don't exist yet
 ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS is_dry_run         BOOLEAN NOT NULL DEFAULT TRUE;
@@ -103,6 +104,7 @@ ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS market_closed      BOOLEAN 
 ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS current_price      NUMERIC(18,6);
 ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS current_value_usdc NUMERIC(18,6);
 ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS closed_at          TIMESTAMPTZ;
+ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS topup_count        INTEGER NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_paper_condition ON paper_positions (condition_id)
     WHERE condition_id <> '';
