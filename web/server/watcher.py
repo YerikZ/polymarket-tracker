@@ -28,6 +28,7 @@ class WatcherState:
     copy_enabled: bool = False
     target_wallet: str | None = None       # address of the single chosen wallet (single_wallet_mode)
     target_wallet_username: str | None = None
+    _monitor: object | None = field(default=None, repr=False)  # SignalMonitor, for clean stop
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
 
@@ -63,6 +64,16 @@ async def stop_watcher(state: WatcherState) -> None:
             state.task = None
             return
 
+    # Signal the monitor thread to exit its sleep/loop before cancelling the task.
+    # Without this, the OS thread running monitor.run() keeps looping forever even
+    # after the asyncio task is cancelled, leaking threads and eventually exhausting
+    # the thread pool (causing asyncio.to_thread calls to hang indefinitely).
+    if state._monitor is not None:
+        try:
+            state._monitor.stop()
+        except Exception:
+            pass
+
     task.cancel()
     try:
         await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
@@ -76,6 +87,7 @@ async def stop_watcher(state: WatcherState) -> None:
         state.mode = ""
         state.target_wallet = None
         state.target_wallet_username = None
+        state._monitor = None
 
 
 async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> None:
@@ -230,10 +242,14 @@ async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> No
                 min_position_usdc=min_position_usdc,
                 max_signal_age=max_signal_age,
             )
+            async with state._lock:
+                state._monitor = monitor
             await asyncio.to_thread(monitor.run, sync_on_signal)
 
     except asyncio.CancelledError:
         logger.info("Watcher task cancelled.")
+        async with state._lock:
+            state._monitor = None
         raise
     except Exception as exc:
         logger.exception("Watcher task crashed: %s", exc)
@@ -241,3 +257,4 @@ async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> No
             state.status = "error"
             state.error = str(exc)
             state.task = None
+            state._monitor = None

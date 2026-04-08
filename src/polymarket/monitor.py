@@ -1,4 +1,5 @@
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Callable
@@ -44,14 +45,20 @@ class SignalMonitor:
         self._max_signal_age = max_signal_age
         # condition_id → resolved title (avoid repeated GAMMA lookups within a session)
         self._title_cache: dict[str, str] = {}
+        self._stop_event = threading.Event()
+
+    def stop(self) -> None:
+        """Signal the run loop to exit at the next sleep boundary."""
+        self._stop_event.set()
 
     def run(self, on_signal: Callable[[Signal], None], force_refresh: bool = False) -> None:
-        """Blocking loop — Ctrl-C to stop.
+        """Blocking loop — call stop() from another thread to exit cleanly.
 
         Args:
             force_refresh: If True, bypass the leaderboard TTL cache on the
                            first fetch (useful after changing top_n in config).
         """
+        self._stop_event.clear()
         logger.info(
             "Starting monitor: %d wallets, poll every %ds, min size $%.0f",
             self._scanner._top_n,
@@ -59,13 +66,15 @@ class SignalMonitor:
             self._min_size,
         )
         poll_count = 0
-        while True:
+        while not self._stop_event.is_set():
             poll_count += 1
             logger.info("Poll #%d …", poll_count)
             try:
                 # Force refresh only on the first poll — subsequent polls use TTL normally
                 wallets = self._scanner.fetch_top_wallets(force_refresh=force_refresh and poll_count == 1)
                 for wallet in wallets:
+                    if self._stop_event.is_set():
+                        break
                     signals = self._poll_wallet(wallet)
                     for sig in signals:
                         sig.alert_id = self._storage.append_alert(sig)
@@ -73,8 +82,13 @@ class SignalMonitor:
             except Exception as exc:
                 logger.error("Error during poll: %s", exc)
 
+            if self._stop_event.is_set():
+                break
             logger.info("Sleeping %ds until next poll…", self._interval)
-            time.sleep(self._interval)
+            # Use wait() instead of sleep() so stop() wakes us immediately
+            self._stop_event.wait(timeout=self._interval)
+
+        logger.info("Monitor stopped.")
 
     def _poll_wallet(self, wallet: Wallet) -> list[Signal]:
         try:
