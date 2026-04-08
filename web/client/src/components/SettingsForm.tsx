@@ -410,10 +410,10 @@ export function SettingsForm() {
             {ct.enable_topup && (
               <>
                 <Field label="Max top-ups per market" hint="0 = unlimited additional buys per market">
-                  <NumInput value={ct.max_topups ?? 2} onChange={(v) => setCt("max_topups", v)} step={1} min={0} />
+                  <NumInput value={ct.max_topups ?? 2} onChange={(v) => setCt("max_topups", v)} step={1} />
                 </Field>
                 <Field label="Top-up size multiplier" hint="1.0 = same size each round · 0.5 = halving (1st: 100% → 2nd: 50% → 3rd: 25%)">
-                  <NumInput value={ct.topup_size_multiplier ?? 1.0} onChange={(v) => setCt("topup_size_multiplier", v)} step={0.1} min={0.1} max={2.0} />
+                  <NumInput value={ct.topup_size_multiplier ?? 1.0} onChange={(v) => setCt("topup_size_multiplier", v)} step={0.1} />
                 </Field>
               </>
             )}
