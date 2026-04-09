@@ -93,10 +93,14 @@ export interface WatcherStatus {
   status: "stopped" | "starting" | "running" | "error";
   mode: "stream" | "poll" | "";
   wallets_tracked: number;
+  wallets_scored: number;
   last_signal_at: string | null;
   copy_enabled: boolean;
   target_wallet: string | null;
   target_wallet_username: string | null;
+  target_wallets: string[];
+  target_wallet_usernames: string[];
+  target_mode: "auto" | "manual" | "single";
   error: string | null;
 }
 
@@ -127,6 +131,8 @@ export interface Settings {
     slippage?: number;
     min_score?: number;
     score_scale_size?: boolean;
+    wallets_to_copy?: number;
+    manual_target_wallets?: string[];
     single_wallet_mode?: boolean;
     enable_topup?: boolean;
     max_topups?: number;

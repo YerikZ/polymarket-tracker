@@ -368,6 +368,12 @@ def _build_copy_trader(
             blocked_keywords=list(ct_cfg.get("blocked_keywords", [])),
             min_score=float(ct_cfg.get("min_score", 50.0)),
             score_scale_size=bool(ct_cfg.get("score_scale_size", True)),
+            wallets_to_copy=int(ct_cfg.get("wallets_to_copy", 5)),
+            manual_target_wallets=list(ct_cfg.get("manual_target_wallets", [])),
+            single_wallet_mode=bool(ct_cfg.get("single_wallet_mode", False)),
+            enable_topup=bool(ct_cfg.get("enable_topup", False)),
+            max_topups=int(ct_cfg.get("max_topups", 2)),
+            topup_size_multiplier=float(ct_cfg.get("topup_size_multiplier", 1.0)),
         ),
         storage=storage,
     )
@@ -386,6 +392,7 @@ def _copy_info_line(copy_trader: CopyTrader | None) -> str:
     }.get(c.sizing_mode, c.sizing_mode)
     return (
         f"\n  Copy mode: {mode}  |  Sizing: [cyan]{sizing}[/cyan]  |  "
+        f"Targets: [cyan]{len(copy_trader._target_wallets) or max(1, c.wallets_to_copy)}[/cyan]  |  "
         f"Max/trade: [cyan]${c.max_trade_usdc:.0f}[/cyan]  |  "
         f"Daily limit: [cyan]${c.daily_limit_usdc:.0f}[/cyan]"
     )

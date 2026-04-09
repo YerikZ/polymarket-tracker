@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 # Defaults shown in the UI when the settings table has never been written.
 # These are merged under any values that come from config.yaml / env vars.
 _DEFAULTS: dict = {
-    "top_n": 20,
+    "top_n": 100,
     "poll_interval": 300,
     "min_position_usdc": 50.0,
     "request_delay": 0.5,
@@ -41,6 +41,8 @@ _DEFAULTS: dict = {
         "slippage": 0.01,
         "min_score": 50.0,
         "score_scale_size": True,
+        "wallets_to_copy": 5,
+        "manual_target_wallets": [],
         "single_wallet_mode": False,
         "enable_topup": False,
         "max_topups": 2,
@@ -174,6 +176,8 @@ def build_copier_config(cfg: dict) -> "CopierConfig":
         blocked_keywords=list(ct.get("blocked_keywords", [])),
         min_score=float(ct.get("min_score", 50.0)),
         score_scale_size=bool(ct.get("score_scale_size", True)),
+        wallets_to_copy=int(ct.get("wallets_to_copy", 5)),
+        manual_target_wallets=list(ct.get("manual_target_wallets", [])),
         single_wallet_mode=bool(ct.get("single_wallet_mode", False)),
         enable_topup=bool(ct.get("enable_topup", False)),
         max_topups=int(ct.get("max_topups", 2)),

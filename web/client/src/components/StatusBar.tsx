@@ -39,6 +39,14 @@ export function StatusBar() {
 
   const watcherMode = settings?.watcher_mode ?? "poll";
   const isDryRun = settings?.copy_trading?.dry_run !== false;
+  const targetSummary = status?.target_wallet_usernames?.length
+    ? status.target_wallet_usernames.join(", ")
+    : null;
+  const targetLabel = status?.target_mode === "manual"
+    ? "Manual"
+    : status?.target_mode === "single"
+    ? "Single"
+    : "Auto";
 
   return (
     <header className="flex items-center justify-between px-4 py-2 bg-zinc-900 border-b border-zinc-800 sticky top-0 z-10">
@@ -52,14 +60,14 @@ export function StatusBar() {
             <>
               <Wifi className="w-3.5 h-3.5 text-emerald-400" />
               <span className="text-emerald-400">
-                {status.mode === "stream" ? "Stream" : "Poll"} · {status.wallets_tracked} wallets
+                {status.mode === "stream" ? "Stream" : "Poll"} · {status.wallets_tracked} tracked · {status.wallets_scored} scored
               </span>
-              {status.target_wallet && (
+              {status.target_wallets.length > 0 && (
                 <span
                   className="px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 border border-violet-500/30 text-[10px] font-semibold tracking-wide"
-                  title={status.target_wallet}
+                  title={targetSummary ?? undefined}
                 >
-                  → {status.target_wallet_username ?? status.target_wallet.slice(0, 8) + "…"}
+                  {targetLabel} · {status.target_wallets.length} target{status.target_wallets.length === 1 ? "" : "s"}
                 </span>
               )}
             </>

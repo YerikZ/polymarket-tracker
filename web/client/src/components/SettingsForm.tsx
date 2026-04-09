@@ -282,7 +282,7 @@ export function SettingsForm() {
 
       {/* General */}
       <Section title="General">
-        <Field label="Top N wallets" hint="How many top leaderboard wallets to track">
+        <Field label="Wallets to score" hint="Leaderboard wallets scanned and scored before target selection">
           <NumInput value={local.top_n} onChange={(v) => set("top_n", v)} />
         </Field>
         <Field label="Poll interval (s)" hint="Seconds between polling cycles">
@@ -366,8 +366,18 @@ export function SettingsForm() {
         <Field label="Slippage" hint="Added to price for better fill">
           <NumInput value={ct.slippage} onChange={(v) => setCt("slippage", v)} step={0.005} />
         </Field>
-        <Field label="Min score (0–100)" hint="Skip wallets below this score">
+        <Field label="Min score (0–100)" hint="Targets still need to pass this score gate">
           <NumInput value={ct.min_score} onChange={(v) => setCt("min_score", v)} />
+        </Field>
+        <Field label="Wallets to copy/watch" hint="Used only when the manual target list is empty">
+          <NumInput value={ct.wallets_to_copy ?? 5} onChange={(v) => setCt("wallets_to_copy", v)} step={1} />
+        </Field>
+        <Field label="Manual target wallets" hint="Optional override. Add wallet addresses from the scored set to watch and copy directly">
+          <TagInput
+            tags={ct.manual_target_wallets ?? []}
+            onChange={(tags) => setCt("manual_target_wallets", tags)}
+            placeholder="0xabc..., 0xdef..."
+          />
         </Field>
         <Field label="Min order size cap" hint="Skip if market minimum exceeds this">
           <NumInput value={ct.min_order_size_cap} onChange={(v) => setCt("min_order_size_cap", v)} step={0.5} />
@@ -383,14 +393,14 @@ export function SettingsForm() {
             </span>
           </div>
         </Field>
-        <Field label="Single-wallet mode" hint="Analyze all wallets but copy only the one with the highest consistency score (temporal + Sharpe + trend + independence)">
+        <Field label="Single-wallet mode" hint="Legacy override: force exactly one auto-selected target wallet">
           <div className="flex items-center gap-2 pt-1">
             <Toggle
               checked={ct.single_wallet_mode ?? false}
               onChange={(v) => setCt("single_wallet_mode", v)}
             />
             <span className="text-xs text-zinc-400">
-              {ct.single_wallet_mode ? "Enabled — one target wallet" : "Disabled — copy all qualifying"}
+              {ct.single_wallet_mode ? "Enabled — one target wallet" : "Disabled"}
             </span>
           </div>
         </Field>

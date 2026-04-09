@@ -92,3 +92,10 @@ copy_trading:
   # score_scale_size: multiply fixed_usdc by wallet's copy_size_pct
   # e.g. Tier B (0.7) × $50 = $35 actual spend
   score_scale_size: true
+
+  # When manual_target_wallets is empty, use the top scored N wallets as active targets.
+  wallets_to_copy: 5
+
+  # Optional manual override for the active target set.
+  # These should be wallet addresses from the scored wallet pool.
+  manual_target_wallets: []

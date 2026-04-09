@@ -46,6 +46,10 @@ def _expand_keywords(keywords: list[str]) -> list[str]:
 
 logger = logging.getLogger(__name__)
 
+
+def _normalize_wallet_ref(value: str) -> str:
+    return value.strip().lower()
+
 # Lazy import so the tool works without py-clob-client for users who only watch
 def _clob_imports():
     from py_clob_client.client import ClobClient
@@ -87,6 +91,10 @@ class CopierConfig:
     min_score: float = 50.0             # skip wallets with score below this (0 = disable)
     score_scale_size: bool = True        # scale position size by wallet's copy_size_pct
 
+    # Target selection
+    wallets_to_copy: int = 5
+    manual_target_wallets: list[str] = field(default_factory=list)
+
     # Single-wallet mode
     single_wallet_mode: bool = False     # if True, copy only the one most-consistent wallet
 
@@ -110,34 +118,72 @@ class CopyTrader:
         self._buy_lock = threading.Lock()
         self._pending_buys: set[str] = set()  # market keys currently being processed
         self._target_wallet: str | None = None  # set in single_wallet_mode
+        self._target_wallets: set[str] = set()
+        self._target_wallet_labels: dict[str, str] = {}
+        self._manual_refs = {
+            _normalize_wallet_ref(value)
+            for value in config.manual_target_wallets
+            if value.strip()
+        }
 
     def update_scores(self, scores: dict[str, WalletScore]) -> None:
         """Called by cmd_watch after computing/refreshing wallet scores."""
         self._scores = scores
-        if self._cfg.single_wallet_mode:
-            self._target_wallet = self._select_target_wallet(scores)
+        self._target_wallets, self._target_wallet_labels = self._select_target_wallets(scores)
+        self._target_wallet = next(iter(self._target_wallets), None) if len(self._target_wallets) == 1 else None
         logger.info("Score cache updated for %d wallets.", len(scores))
 
-    @staticmethod
-    def _select_target_wallet(scores: dict[str, WalletScore]) -> str | None:
-        """Pick the most consistent wallet from scored candidates."""
+    def _select_target_wallets(self, scores: dict[str, WalletScore]) -> tuple[set[str], dict[str, str]]:
+        """Select target wallets from scored candidates."""
         eligible = [
             ws for ws in scores.values()
             if ws.copy_size_pct > 0 and not ws.insufficient_data
         ]
         if not eligible:
-            logger.warning("Single-wallet mode: no eligible wallets found.")
-            return None
+            logger.warning("No eligible target wallets found after scoring.")
+            return set(), {}
 
         def consistency(ws: WalletScore) -> float:
             return ws.s2_temporal_consistency + ws.r2_sharpe + ws.r3_recency_trend + ws.s3_independence
 
-        best = max(eligible, key=consistency)
+        ranked_by_total = sorted(eligible, key=lambda ws: (ws.total, consistency(ws)), reverse=True)
+        refs = self._manual_refs
+        selected: list[WalletScore]
+        mode: str
+        if refs:
+            labels = {
+                _normalize_wallet_ref(ws.address): ws.address
+                for ws in eligible
+            }
+            matched = []
+            for ws in ranked_by_total:
+                names = {
+                    _normalize_wallet_ref(ws.address),
+                }
+                if any(ref in names for ref in refs):
+                    matched.append(ws)
+            selected = matched
+            mode = "manual"
+        elif self._cfg.single_wallet_mode:
+            selected = sorted(eligible, key=consistency, reverse=True)[:1]
+            mode = "single"
+        else:
+            selected = ranked_by_total[: max(1, self._cfg.wallets_to_copy)]
+            mode = "auto"
+
+        if not selected:
+            logger.warning("Target selection mode '%s' produced no scored wallets.", mode)
+            return set(), {}
+
+        target_wallets = {ws.address for ws in selected}
+        target_labels = {ws.address: ws.address for ws in selected}
         logger.info(
-            "Single-wallet mode: selected %s (tier %s, consistency=%.1f, total=%.0f/100)",
-            best.address, best.copy_tier, consistency(best), best.total,
+            "Selected %d target wallet(s) in %s mode: %s",
+            len(selected),
+            mode,
+            ", ".join(ws.address for ws in selected),
         )
-        return best.address
+        return target_wallets, target_labels
 
     def is_daily_limit_reached(self) -> bool:
         """Return True if today's spend has hit or exceeded the daily cap."""
@@ -156,17 +202,17 @@ class CopyTrader:
                 reason="No token_id in signal — cannot place order without ERC-1155 asset ID",
             )
 
-        # Single-wallet mode: only act on signals from the chosen target
-        if self._cfg.single_wallet_mode:
-            if not self._target_wallet:
+        # Target mode: only act on signals from the chosen target set
+        if self._target_wallets or self._cfg.single_wallet_mode or self._manual_refs:
+            if not self._target_wallets:
                 return CopyResult(
                     signal=signal, status="skipped",
-                    reason="Single-wallet mode: no target wallet selected yet",
+                    reason="Target selection: no scored wallets selected yet",
                 )
-            if signal.wallet_address != self._target_wallet:
+            if signal.wallet_address not in self._target_wallets:
                 return CopyResult(
                     signal=signal, status="skipped",
-                    reason="Single-wallet mode: not target wallet",
+                    reason="Target selection: wallet not in active target set",
                 )
 
         if signal.side == "SELL":
@@ -202,7 +248,7 @@ class CopyTrader:
                 )
             existing = self._storage.get_open_position(signal.condition_id, signal.token_id)
             if existing:
-                if self._cfg.single_wallet_mode and self._cfg.enable_topup:
+                if len(self._target_wallets) == 1 and self._cfg.enable_topup:
                     # Release lock before doing the (potentially slow) top-up
                     pass
                 else:

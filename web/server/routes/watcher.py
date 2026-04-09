@@ -40,9 +40,13 @@ async def status(request: Request):
         "status": state.status,
         "mode": state.mode,
         "wallets_tracked": state.wallets_tracked,
+        "wallets_scored": state.wallets_scored,
         "last_signal_at": state.last_signal_at,
         "copy_enabled": state.copy_enabled,
         "target_wallet": state.target_wallet,
         "target_wallet_username": state.target_wallet_username,
+        "target_wallets": state.target_wallets,
+        "target_wallet_usernames": state.target_wallet_usernames,
+        "target_mode": state.target_mode,
         "error": state.error,
     }

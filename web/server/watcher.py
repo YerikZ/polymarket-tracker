@@ -23,11 +23,15 @@ class WatcherState:
     status: str = "stopped"          # stopped | starting | running | error
     mode: str = ""                   # stream | poll
     wallets_tracked: int = 0
+    wallets_scored: int = 0
     last_signal_at: str | None = None
     error: str | None = None
     copy_enabled: bool = False
     target_wallet: str | None = None       # address of the single chosen wallet (single_wallet_mode)
     target_wallet_username: str | None = None
+    target_wallets: list[str] = field(default_factory=list)
+    target_wallet_usernames: list[str] = field(default_factory=list)
+    target_mode: str = "auto"
     _monitor: object | None = field(default=None, repr=False)  # SignalMonitor, for clean stop
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
@@ -40,6 +44,12 @@ async def start_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> N
 
         state.status = "starting"
         state.error = None
+        state.copy_enabled = False
+        state.target_wallet = None
+        state.target_wallet_username = None
+        state.target_wallets = []
+        state.target_wallet_usernames = []
+        state.target_mode = "auto"
 
     try:
         task = asyncio.create_task(
@@ -62,6 +72,7 @@ async def stop_watcher(state: WatcherState) -> None:
         if task is None or task.done():
             state.status = "stopped"
             state.task = None
+            state.copy_enabled = False
             return
 
     # Signal the monitor thread to exit its sleep/loop before cancelling the task.
@@ -87,6 +98,11 @@ async def stop_watcher(state: WatcherState) -> None:
         state.mode = ""
         state.target_wallet = None
         state.target_wallet_username = None
+        state.target_wallets = []
+        state.target_wallet_usernames = []
+        state.target_mode = "auto"
+        state.wallets_scored = 0
+        state.copy_enabled = False
         state._monitor = None
 
 
@@ -139,6 +155,7 @@ async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> No
         )
         async with state._lock:
             state.wallets_tracked = len(wallets)
+            state.wallets_scored = 0
 
         # Build copy trader if credentials present
         ct_cfg = cfg.get("copy_trading", {})
@@ -162,13 +179,28 @@ async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> No
 
         scorer = WalletScorer()
         scores = await asyncio.to_thread(scorer.score_all, stats_list, storage)
+        async with state._lock:
+            state.wallets_scored = len(scores)
         if copy_trader:
             copy_trader.update_scores(scores)
-            if copy_trader._target_wallet:
-                tw = next((w for w in wallets if w.address == copy_trader._target_wallet), None)
-                async with state._lock:
-                    state.target_wallet = copy_trader._target_wallet
-                    state.target_wallet_username = tw.username if tw else None
+            wallet_name_map = {w.address: w.username for w in wallets}
+            async with state._lock:
+                state.target_wallets = sorted(copy_trader._target_wallets)
+                state.target_wallet_usernames = [
+                    wallet_name_map.get(address) or f"{address[:8]}…"
+                    for address in state.target_wallets
+                ]
+                state.target_wallet = state.target_wallets[0] if len(state.target_wallets) == 1 else None
+                state.target_wallet_username = (
+                    state.target_wallet_usernames[0] if len(state.target_wallet_usernames) == 1 else None
+                )
+                state.target_mode = (
+                    "manual"
+                    if copy_trader._cfg.manual_target_wallets
+                    else "single"
+                    if copy_trader._cfg.single_wallet_mode
+                    else "auto"
+                )
 
         # ── Sync callback (monitor / poll path) ─────────────────────────────
         # monitor.run() executes in a thread-pool thread (asyncio.to_thread),

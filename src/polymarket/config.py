@@ -3,7 +3,7 @@ import yaml
 from pathlib import Path
 
 _DEFAULTS = {
-    "top_n": 20,
+    "top_n": 100,
     "poll_interval": 300,
     "min_position_usdc": 50.0,
     "request_delay": 0.5,
@@ -14,6 +14,10 @@ _DEFAULTS = {
     "polygon_wss": "",
     "wallet_refresh_interval": 600,
     "database_url": "postgresql://polymarket:polymarket@localhost:5433/polymarket",
+    "copy_trading": {
+        "wallets_to_copy": 5,
+        "manual_target_wallets": [],
+    },
 }
 
 _ENV_MAP = {

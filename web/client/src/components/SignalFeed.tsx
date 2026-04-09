@@ -82,7 +82,8 @@ export function SignalFeed() {
 
   const tierMap = Object.fromEntries(wallets.map((w) => [w.address, w.tier]));
 
-  const targetWallet = status?.target_wallet ?? null;
+  const targetWallets = status?.target_wallets ?? [];
+  const targetWallet = targetWallets.length === 1 ? targetWallets[0] : null;
 
   // When a target wallet is active, also fetch its historical signals via REST
   // (the WS only seeds the last 20 globally, which may not include the target wallet).
@@ -104,7 +105,7 @@ export function SignalFeed() {
   const filtered = mergedSignals.filter(
     (s) =>
       (sideFilter === "ALL" || s.side === sideFilter) &&
-      (!targetWallet || s.wallet_address === targetWallet)
+      (targetWallets.length === 0 || targetWallets.includes(s.wallet_address))
   );
 
   return (
