@@ -42,11 +42,7 @@ export function StatusBar() {
   const targetSummary = status?.target_wallet_usernames?.length
     ? status.target_wallet_usernames.join(", ")
     : null;
-  const targetLabel = status?.target_mode === "manual"
-    ? "Manual"
-    : status?.target_mode === "single"
-    ? "Single"
-    : "Auto";
+  const targetLabel = status?.target_mode === "manual" ? "Manual" : "Auto";
 
   return (
     <header className="flex items-center justify-between px-4 py-2 bg-zinc-900 border-b border-zinc-800 sticky top-0 z-10">

@@ -370,7 +370,6 @@ def _build_copy_trader(
             score_scale_size=bool(ct_cfg.get("score_scale_size", True)),
             wallets_to_copy=int(ct_cfg.get("wallets_to_copy", 5)),
             manual_target_wallets=list(ct_cfg.get("manual_target_wallets", [])),
-            single_wallet_mode=bool(ct_cfg.get("single_wallet_mode", False)),
             enable_topup=bool(ct_cfg.get("enable_topup", False)),
             max_topups=int(ct_cfg.get("max_topups", 2)),
             topup_size_multiplier=float(ct_cfg.get("topup_size_multiplier", 1.0)),

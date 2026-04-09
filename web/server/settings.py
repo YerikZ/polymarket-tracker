@@ -43,7 +43,6 @@ _DEFAULTS: dict = {
         "score_scale_size": True,
         "wallets_to_copy": 5,
         "manual_target_wallets": [],
-        "single_wallet_mode": False,
         "enable_topup": False,
         "max_topups": 2,
         "topup_size_multiplier": 1.0,
@@ -58,6 +57,9 @@ _SENSITIVE = {"private_key", "polygon_wss"}
 
 # Nested sensitive fields under copy_trading
 _SENSITIVE_NESTED = {"private_key"}
+_LEGACY_COPY_TRADING_KEYS = {
+    "single_wallet_mode",
+}
 
 
 def get_settings(storage: "Storage", seed_cfg: dict | None = None) -> dict:
@@ -76,8 +78,9 @@ def get_settings(storage: "Storage", seed_cfg: dict | None = None) -> dict:
     # If anything was removed, write the clean copy back so the DB heals itself.
     stored_clean = copy.deepcopy(stored)
     _scrub_sentinels(stored_clean)
+    _scrub_legacy_copy_trading_keys(stored_clean)
     if stored_clean != stored:
-        logger.warning("Scrubbed '***' sentinel(s) from stored settings — rewriting clean copy to DB.")
+        logger.warning("Scrubbed stale masked or legacy settings values — rewriting clean copy to DB.")
         storage.put_settings(stored_clean)
     stored = stored_clean
 
@@ -134,6 +137,7 @@ def put_settings(storage: "Storage", updates: dict) -> dict:
 
     for k, v in updates.items():
         if k == "copy_trading" and isinstance(v, dict):
+            v = {ck: cv for ck, cv in v.items() if ck not in _LEGACY_COPY_TRADING_KEYS}
             merged.setdefault("copy_trading", {}).update(v)
         else:
             merged[k] = v
@@ -178,7 +182,6 @@ def build_copier_config(cfg: dict) -> "CopierConfig":
         score_scale_size=bool(ct.get("score_scale_size", True)),
         wallets_to_copy=int(ct.get("wallets_to_copy", 5)),
         manual_target_wallets=list(ct.get("manual_target_wallets", [])),
-        single_wallet_mode=bool(ct.get("single_wallet_mode", False)),
         enable_topup=bool(ct.get("enable_topup", False)),
         max_topups=int(ct.get("max_topups", 2)),
         topup_size_multiplier=float(ct.get("topup_size_multiplier", 1.0)),
@@ -205,3 +208,10 @@ def _scrub_sentinels(stored: dict) -> None:
     for key in _SENSITIVE_NESTED:
         if ct.get(key) == "***":
             del ct[key]
+
+
+def _scrub_legacy_copy_trading_keys(stored: dict) -> None:
+    """Remove deprecated single-wallet settings keys from stored config."""
+    ct = stored.get("copy_trading", {})
+    for key in _LEGACY_COPY_TRADING_KEYS:
+        ct.pop(key, None)

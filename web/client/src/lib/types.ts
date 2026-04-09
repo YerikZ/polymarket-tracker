@@ -96,11 +96,9 @@ export interface WatcherStatus {
   wallets_scored: number;
   last_signal_at: string | null;
   copy_enabled: boolean;
-  target_wallet: string | null;
-  target_wallet_username: string | null;
   target_wallets: string[];
   target_wallet_usernames: string[];
-  target_mode: "auto" | "manual" | "single";
+  target_mode: "auto" | "manual";
   error: string | null;
 }
 
@@ -133,7 +131,6 @@ export interface Settings {
     score_scale_size?: boolean;
     wallets_to_copy?: number;
     manual_target_wallets?: string[];
-    single_wallet_mode?: boolean;
     enable_topup?: boolean;
     max_topups?: number;
     topup_size_multiplier?: number;

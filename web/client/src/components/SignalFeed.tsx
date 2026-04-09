@@ -83,20 +83,20 @@ export function SignalFeed() {
   const tierMap = Object.fromEntries(wallets.map((w) => [w.address, w.tier]));
 
   const targetWallets = status?.target_wallets ?? [];
-  const targetWallet = targetWallets.length === 1 ? targetWallets[0] : null;
+  const singleTargetWallet = targetWallets.length === 1 ? targetWallets[0] : null;
 
-  // When a target wallet is active, also fetch its historical signals via REST
-  // (the WS only seeds the last 20 globally, which may not include the target wallet).
+  // When exactly one target wallet is active, also fetch its historical signals via REST
+  // so the feed stays focused on that wallet even if the WS backlog misses it.
   const { data: targetHistory = [] } = useQuery<Alert[]>({
-    queryKey: ["alerts-wallet", targetWallet],
+    queryKey: ["alerts-wallet", singleTargetWallet],
     queryFn: () =>
-      fetch(`/api/alerts?wallet_address=${targetWallet}&limit=100`).then((r) => r.json()),
-    enabled: !!targetWallet,
+      fetch(`/api/alerts?wallet_address=${singleTargetWallet}&limit=100`).then((r) => r.json()),
+    enabled: !!singleTargetWallet,
     staleTime: 30_000,
   });
 
-  // Merge WS signals + target wallet history, deduplicate by id, sort newest first.
-  const mergedSignals = targetWallet
+  // Merge WS signals + focused target history, deduplicate by id, sort newest first.
+  const mergedSignals = singleTargetWallet
     ? Array.from(
         new Map([...signals, ...targetHistory].map((s) => [s.id, s])).values()
       ).sort((a, b) => b.id - a.id)

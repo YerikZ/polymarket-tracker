@@ -27,8 +27,6 @@ class WatcherState:
     last_signal_at: str | None = None
     error: str | None = None
     copy_enabled: bool = False
-    target_wallet: str | None = None       # address of the single chosen wallet (single_wallet_mode)
-    target_wallet_username: str | None = None
     target_wallets: list[str] = field(default_factory=list)
     target_wallet_usernames: list[str] = field(default_factory=list)
     target_mode: str = "auto"
@@ -45,8 +43,6 @@ async def start_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> N
         state.status = "starting"
         state.error = None
         state.copy_enabled = False
-        state.target_wallet = None
-        state.target_wallet_username = None
         state.target_wallets = []
         state.target_wallet_usernames = []
         state.target_mode = "auto"
@@ -96,8 +92,6 @@ async def stop_watcher(state: WatcherState) -> None:
         state.status = "stopped"
         state.wallets_tracked = 0
         state.mode = ""
-        state.target_wallet = None
-        state.target_wallet_username = None
         state.target_wallets = []
         state.target_wallet_usernames = []
         state.target_mode = "auto"
@@ -190,17 +184,7 @@ async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> No
                     wallet_name_map.get(address) or f"{address[:8]}…"
                     for address in state.target_wallets
                 ]
-                state.target_wallet = state.target_wallets[0] if len(state.target_wallets) == 1 else None
-                state.target_wallet_username = (
-                    state.target_wallet_usernames[0] if len(state.target_wallet_usernames) == 1 else None
-                )
-                state.target_mode = (
-                    "manual"
-                    if copy_trader._cfg.manual_target_wallets
-                    else "single"
-                    if copy_trader._cfg.single_wallet_mode
-                    else "auto"
-                )
+                state.target_mode = "manual" if copy_trader._cfg.manual_target_wallets else "auto"
 
         # ── Sync callback (monitor / poll path) ─────────────────────────────
         # monitor.run() executes in a thread-pool thread (asyncio.to_thread),

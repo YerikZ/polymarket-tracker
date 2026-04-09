@@ -95,13 +95,10 @@ class CopierConfig:
     wallets_to_copy: int = 5
     manual_target_wallets: list[str] = field(default_factory=list)
 
-    # Single-wallet mode
-    single_wallet_mode: bool = False     # if True, copy only the one most-consistent wallet
-
-    # Confidence top-up (only active when single_wallet_mode=True)
-    enable_topup: bool = False           # top-up existing positions on repeated target-wallet buys
-    max_topups: int = 2                  # max additional buys per market (0 = unlimited)
-    topup_size_multiplier: float = 1.0   # size multiplier per round (1.0=flat, 0.5=halving decay)
+    # Repeated-order top-up
+    enable_topup: bool = False
+    max_topups: int = 2
+    topup_size_multiplier: float = 1.0
 
 
 class CopyTrader:
@@ -117,9 +114,7 @@ class CopyTrader:
         # has written to the DB.
         self._buy_lock = threading.Lock()
         self._pending_buys: set[str] = set()  # market keys currently being processed
-        self._target_wallet: str | None = None  # set in single_wallet_mode
         self._target_wallets: set[str] = set()
-        self._target_wallet_labels: dict[str, str] = {}
         self._manual_refs = {
             _normalize_wallet_ref(value)
             for value in config.manual_target_wallets
@@ -129,11 +124,10 @@ class CopyTrader:
     def update_scores(self, scores: dict[str, WalletScore]) -> None:
         """Called by cmd_watch after computing/refreshing wallet scores."""
         self._scores = scores
-        self._target_wallets, self._target_wallet_labels = self._select_target_wallets(scores)
-        self._target_wallet = next(iter(self._target_wallets), None) if len(self._target_wallets) == 1 else None
+        self._target_wallets = self._select_target_wallets(scores)
         logger.info("Score cache updated for %d wallets.", len(scores))
 
-    def _select_target_wallets(self, scores: dict[str, WalletScore]) -> tuple[set[str], dict[str, str]]:
+    def _select_target_wallets(self, scores: dict[str, WalletScore]) -> set[str]:
         """Select target wallets from scored candidates."""
         eligible = [
             ws for ws in scores.values()
@@ -141,49 +135,35 @@ class CopyTrader:
         ]
         if not eligible:
             logger.warning("No eligible target wallets found after scoring.")
-            return set(), {}
+            return set()
 
-        def consistency(ws: WalletScore) -> float:
-            return ws.s2_temporal_consistency + ws.r2_sharpe + ws.r3_recency_trend + ws.s3_independence
-
-        ranked_by_total = sorted(eligible, key=lambda ws: (ws.total, consistency(ws)), reverse=True)
+        ranked_by_total = sorted(eligible, key=lambda ws: ws.total, reverse=True)
         refs = self._manual_refs
         selected: list[WalletScore]
-        mode: str
         if refs:
-            labels = {
-                _normalize_wallet_ref(ws.address): ws.address
-                for ws in eligible
-            }
             matched = []
             for ws in ranked_by_total:
-                names = {
-                    _normalize_wallet_ref(ws.address),
-                }
+                names = {_normalize_wallet_ref(ws.address)}
                 if any(ref in names for ref in refs):
                     matched.append(ws)
             selected = matched
             mode = "manual"
-        elif self._cfg.single_wallet_mode:
-            selected = sorted(eligible, key=consistency, reverse=True)[:1]
-            mode = "single"
         else:
             selected = ranked_by_total[: max(1, self._cfg.wallets_to_copy)]
             mode = "auto"
 
         if not selected:
             logger.warning("Target selection mode '%s' produced no scored wallets.", mode)
-            return set(), {}
+            return set()
 
         target_wallets = {ws.address for ws in selected}
-        target_labels = {ws.address: ws.address for ws in selected}
         logger.info(
             "Selected %d target wallet(s) in %s mode: %s",
             len(selected),
             mode,
             ", ".join(ws.address for ws in selected),
         )
-        return target_wallets, target_labels
+        return target_wallets
 
     def is_daily_limit_reached(self) -> bool:
         """Return True if today's spend has hit or exceeded the daily cap."""
@@ -203,7 +183,7 @@ class CopyTrader:
             )
 
         # Target mode: only act on signals from the chosen target set
-        if self._target_wallets or self._cfg.single_wallet_mode or self._manual_refs:
+        if self._target_wallets or self._manual_refs:
             if not self._target_wallets:
                 return CopyResult(
                     signal=signal, status="skipped",
@@ -248,10 +228,7 @@ class CopyTrader:
                 )
             existing = self._storage.get_open_position(signal.condition_id, signal.token_id)
             if existing:
-                if len(self._target_wallets) == 1 and self._cfg.enable_topup:
-                    # Release lock before doing the (potentially slow) top-up
-                    pass
-                else:
+                if not self._cfg.enable_topup:
                     return CopyResult(
                         signal=signal, status="skipped",
                         reason=f"Already have an open position in this market ({signal.market_title[:40]})",
@@ -262,7 +239,6 @@ class CopyTrader:
             if not existing:
                 self._pending_buys.add(market_key)
 
-        # Route top-up before any further filtering
         if existing:
             return self._topup_position(signal, existing)
 
@@ -384,34 +360,35 @@ class CopyTrader:
         # Live execution
         return self._place_order(signal, shares, order_price, spend)
 
-    # ------------------------------------------------------------------
-    # Confidence top-up
-    # ------------------------------------------------------------------
-
     def _topup_position(self, signal: Signal, existing: dict) -> CopyResult:
-        """Add to an existing open position when the target wallet buys again."""
-        topup_count = existing.get("topup_count", 0)
-
-        # Enforce max_topups limit (0 = unlimited)
+        """Add to an existing open position when an active target buys again."""
+        topup_count = int(existing.get("topup_count", 0) or 0)
         if self._cfg.max_topups > 0 and topup_count >= self._cfg.max_topups:
             return CopyResult(
-                signal=signal, status="skipped",
+                signal=signal,
+                status="skipped",
                 reason=f"Max top-ups reached ({self._cfg.max_topups}) for this market",
             )
 
-        # Compute spend using normal sizing then apply per-round decay multiplier
         balance = self._get_balance()
         spend = self._compute_spend(signal, balance)
-        multiplier = self._cfg.topup_size_multiplier ** topup_count  # 1.0, 0.5, 0.25 …
-        spend = round(spend * multiplier, 2)
 
-        # Safety caps
+        wallet_score = self._scores.get(signal.wallet_address)
+        if wallet_score and self._cfg.score_scale_size and wallet_score.copy_size_pct < 1.0:
+            spend = round(spend * wallet_score.copy_size_pct, 2)
+
+        multiplier = self._cfg.topup_size_multiplier ** topup_count
+        spend = round(spend * multiplier, 2)
+        if spend <= 0:
+            return CopyResult(signal=signal, status="skipped", reason="Computed top-up spend is $0")
+
         spend = min(spend, self._cfg.max_trade_usdc)
         spent_today = self._storage.get_daily_spend(date.today().isoformat())
         remaining_daily = self._cfg.daily_limit_usdc - spent_today
         if spend > remaining_daily:
             return CopyResult(
-                signal=signal, status="skipped",
+                signal=signal,
+                status="skipped",
                 reason=f"Top-up would exceed daily limit (remaining: ${remaining_daily:.2f})",
             )
 
@@ -419,7 +396,7 @@ class CopyTrader:
         shares = round(spend / order_price, 2)
 
         logger.info(
-            "Top-up #%d for %s: +$%.2f (×%.2f) at %.4f → %.2f shares",
+            "Top-up #%d for %s: +$%.2f (x%.2f) at %.4f -> %.2f shares",
             topup_count + 1, signal.market_title[:40], spend, multiplier, order_price, shares,
         )
 
@@ -427,16 +404,26 @@ class CopyTrader:
             self._storage.add_to_position(existing["id"], shares, spend)
             self._storage.record_daily_spend(date.today().isoformat(), spend)
             return CopyResult(
-                signal=signal, status="bought", spend_usdc=spend,
-                reason=f"[DRY-RUN] Top-up #{topup_count + 1}: +{shares:.2f} shares @ {order_price:.4f}",
+                signal=signal,
+                status="dry_run",
+                spend_usdc=spend,
+                price=order_price,
+                reason=f"DRY RUN TOP-UP #{topup_count + 1}: +{shares:.2f} shares @ ${order_price:.4f}",
             )
 
         return self._place_topup_order(signal, existing, shares, order_price, spend)
 
-    def _place_topup_order(self, signal: Signal, existing: dict, shares: float, price: float, spend: float) -> CopyResult:
+    def _place_topup_order(
+        self,
+        signal: Signal,
+        existing: dict,
+        shares: float,
+        price: float,
+        spend: float,
+    ) -> CopyResult:
         """Place a live top-up buy order and update the DB position on success."""
         try:
-            ClobClient, OrderArgs, OrderType, BUY, SELL, BalanceAllowanceParams, AssetType = _clob_imports()
+            _, OrderArgs, OrderType, BUY, _, _, _ = _clob_imports()
             client = self._get_client()
             order_args = OrderArgs(token_id=signal.token_id, price=price, size=shares, side=BUY)
             signed = client.create_order(order_args)
@@ -446,12 +433,16 @@ class CopyTrader:
             return CopyResult(signal=signal, status="failed", reason=f"Top-up order exception: {exc}")
 
         if resp.get("success") or resp.get("orderID"):
-            topup_num = existing.get("topup_count", 0) + 1
+            topup_num = int(existing.get("topup_count", 0) or 0) + 1
             self._storage.add_to_position(existing["id"], shares, spend)
             self._storage.record_daily_spend(date.today().isoformat(), spend)
             return CopyResult(
-                signal=signal, status="bought", spend_usdc=spend,
-                reason=f"Top-up #{topup_num}: +{shares:.2f} shares @ {price:.4f} (order {resp.get('orderID','')})",
+                signal=signal,
+                status="placed",
+                spend_usdc=spend,
+                price=price,
+                reason=f"Top-up #{topup_num}: +{shares:.2f} shares @ ${price:.4f} (order {resp.get('orderID','')})",
+                order_id=resp.get("orderID", ""),
             )
 
         return CopyResult(signal=signal, status="failed", reason=f"Top-up order rejected: {resp}")

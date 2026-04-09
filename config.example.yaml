@@ -99,3 +99,9 @@ copy_trading:
   # Optional manual override for the active target set.
   # These should be wallet addresses from the scored wallet pool.
   manual_target_wallets: []
+
+  # Repeated-order top-up: if an active target buys the same market again,
+  # add to the existing position instead of skipping the signal.
+  enable_topup: false
+  max_topups: 2
+  topup_size_multiplier: 1.0
