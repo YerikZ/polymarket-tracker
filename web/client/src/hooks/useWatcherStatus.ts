@@ -3,7 +3,21 @@ import type { WatcherStatus } from "../lib/types";
 
 async function fetchStatus(): Promise<WatcherStatus> {
   const r = await fetch("/api/watcher/status");
-  return r.json();
+  const data = await r.json();
+  return {
+    status: data.status ?? "stopped",
+    mode: data.mode ?? "",
+    wallets_tracked: data.wallets_tracked ?? 0,
+    wallets_scored: data.wallets_scored ?? 0,
+    last_signal_at: data.last_signal_at ?? null,
+    copy_enabled: data.copy_enabled ?? false,
+    target_wallets: Array.isArray(data.target_wallets) ? data.target_wallets : [],
+    target_wallet_usernames: Array.isArray(data.target_wallet_usernames)
+      ? data.target_wallet_usernames
+      : [],
+    target_mode: data.target_mode === "manual" ? "manual" : "auto",
+    error: data.error ?? null,
+  };
 }
 
 export function useWatcherStatus() {

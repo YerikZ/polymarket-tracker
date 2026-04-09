@@ -43,6 +43,7 @@ export function StatusBar() {
     ? status.target_wallet_usernames.join(", ")
     : null;
   const targetLabel = status?.target_mode === "manual" ? "Manual" : "Auto";
+  const dailyLimit = pnl?.daily_limit && pnl.daily_limit > 0 ? pnl.daily_limit : 1;
 
   return (
     <header className="flex items-center justify-between px-4 py-2 bg-zinc-900 border-b border-zinc-800 sticky top-0 z-10">
@@ -102,7 +103,7 @@ export function StatusBar() {
             <div
               className="h-full bg-emerald-500 rounded-full transition-all"
               style={{
-                width: `${Math.min(100, (pnl.spent_today / pnl.daily_limit) * 100)}%`,
+                width: `${Math.min(100, (pnl.spent_today / dailyLimit) * 100)}%`,
               }}
             />
           </div>
