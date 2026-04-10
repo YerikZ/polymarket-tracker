@@ -47,7 +47,11 @@ function ActionBadge({
     return <span className="text-zinc-700">—</span>;
   }
 
-  const { label, className } = ACTION_STYLES[status];
+  const style = ACTION_STYLES[status as CopierStatus];
+  if (!style) {
+    return <span className="text-zinc-600 text-[10px]">{status}</span>;
+  }
+  const { label, className } = style;
 
   const tooltip = [
     reason,
