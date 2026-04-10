@@ -28,17 +28,25 @@ _C1 = 10   # market impact
 _C2 = 10   # signal freshness
 _C3 = 5    # liquidity (stubbed)
 
-_MIN_MARKETS = 10   # below this → insufficient_data flag
+_MIN_MARKETS = 15   # below this → insufficient_data flag
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
-def _win_rate(positions) -> float:
-    if not positions:
-        return 0.0
-    return sum(1 for p in positions if p.cash_pnl > 0) / len(positions)
+def _is_resolved(p) -> bool:
+    """Position has a definitive outcome (redeemable or priced at 0 or 1)."""
+    return p.redeemable or p.cur_price in (0.0, 1.0)
+
+
+def _pos_won(p) -> bool:
+    """True if the position ended in profit. Uses resolved signal when available."""
+    if p.redeemable or p.cur_price == 1.0:
+        return True
+    if p.cur_price == 0.0:
+        return False
+    return p.cash_pnl > 0
 
 
 class WalletScorer:
@@ -102,16 +110,16 @@ class WalletScorer:
         r3 = self._r3_recency_trend(trades, pos, stats)
         c1 = self._c1_market_impact(trades, pos)
         c2 = self._c2_signal_freshness(buy_trades)
-        c3 = 2.5  # neutral stub — needs CLOB order-book API
+        c3 = self._c3_liquidity(pos)
 
         skill       = s1 + s2 + s3
         reliability = r1 + r2 + r3
         copiability = c1 + c2 + c3
         total       = skill + reliability + copiability
 
-        tier      = _tier(total, insufficient)
+        tier      = _tier(total, insufficient, unique_markets)
         size_pct  = _size_pct(tier, c1)
-        categories = _strong_categories(trades)
+        categories = _strong_categories(trades, pos)
 
         return WalletScore(
             address=stats.wallet.address,
@@ -168,8 +176,12 @@ class WalletScorer:
 
     def _s2_temporal_consistency(self, trades, positions) -> float:
         """
-        Win rate of open positions whose condition_id appears in BUY trades
-        within each time window.  Score on consistency across 7d and 30d.
+        Consistency of outcomes across 7d and 30d windows.
+
+        For each window, BUY trades are matched to positions by condition_id.
+        Resolved positions (definitive outcome) get 70% weight; open positions
+        (unrealized mark) get 30% weight.  Pure open-only windows are penalised
+        to 70% of face value to reflect weaker signal quality.
         """
         now = datetime.now(timezone.utc)
         pos_by_cid = {p.condition_id: p for p in positions if p.condition_id}
@@ -180,15 +192,28 @@ class WalletScorer:
         }
 
         window_wrs: list[float] = []
-        for name, cutoff_ts in windows.items():
-            cids = {
+        for cutoff_ts in windows.values():
+            window_cids = {
                 t.condition_id for t in trades
                 if t.side == "BUY" and t.condition_id and t.timestamp >= cutoff_ts
             }
-            matched = [pos_by_cid[c] for c in cids if c in pos_by_cid
-                       and pos_by_cid[c].initial_value > 0]
-            if len(matched) >= 2:
-                window_wrs.append(_win_rate(matched))
+            matched = [pos_by_cid[c] for c in window_cids
+                       if c in pos_by_cid and pos_by_cid[c].initial_value > 0]
+            if not matched:
+                continue
+
+            res = [p for p in matched if _is_resolved(p)]
+            opn = [p for p in matched if not _is_resolved(p)]
+
+            r_wr = (sum(1 for p in res if _pos_won(p)) / len(res)) if len(res) >= 2 else None
+            o_wr = (sum(1 for p in opn if p.percent_pnl > 0) / len(opn)) if len(opn) >= 2 else None
+
+            if r_wr is not None and o_wr is not None:
+                window_wrs.append(0.70 * r_wr + 0.30 * o_wr)
+            elif r_wr is not None:
+                window_wrs.append(r_wr)
+            elif o_wr is not None:
+                window_wrs.append(o_wr * 0.70)  # penalise pure unrealized
 
         if not window_wrs:
             return _S2 * 0.5  # neutral — can't compute without window data
@@ -209,8 +234,12 @@ class WalletScorer:
         """
         For each BUY trade, check whether any peer wallet traded the same
         market.  If this wallet traded first (or uniquely), count as leader.
-        leader_rate = leader_trades / all_trades_with_peer_overlap
+        leader_rate = weighted_leader / total_weight
         High leader rate → high independence score.
+
+        Unique trades (no peer overlap) count as 0.6 leader weight — uniqueness
+        is not the same as directional independence.  Tightened to 15-minute
+        window (was 1 hour) to reduce false-positive leaders in fast markets.
         """
         my_buys = {
             t.condition_id: t.timestamp
@@ -220,7 +249,10 @@ class WalletScorer:
         if not my_buys or not peers:
             return _S3 * 0.5  # neutral
 
-        leader = follower = 0
+        _LEADER_WINDOW = 900  # 15 minutes
+
+        leader_w = 0.0
+        total_w  = 0.0
         for cid, my_ts in my_buys.items():
             peer_ts_list = [
                 t.timestamp
@@ -229,19 +261,17 @@ class WalletScorer:
                 if t.condition_id == cid and t.side == "BUY" and t.timestamp > 0
             ]
             if not peer_ts_list:
-                leader += 1   # unique trade — no one else touched it
+                leader_w += 0.6  # unique trade — partial credit (unpopular ≠ independent)
+                total_w  += 1.0
                 continue
             earliest_peer = min(peer_ts_list)
-            # "Leader" if within 1 hour of the first peer (concurrent or ahead)
-            if my_ts <= earliest_peer + 3600:
-                leader += 1
-            else:
-                follower += 1
+            if my_ts <= earliest_peer + _LEADER_WINDOW:
+                leader_w += 1.0
+            total_w += 1.0
 
-        total = leader + follower
-        if total == 0:
+        if total_w == 0:
             return _S3 * 0.5
-        return (leader / total) * _S3
+        return (leader_w / total_w) * _S3
 
     # ── R1: Sample breadth ───────────────────────────────────────────────────
 
@@ -267,24 +297,41 @@ class WalletScorer:
 
     def _r2_sharpe(self, positions) -> float:
         """
-        Pseudo-Sharpe: mean(percent_pnl) / std(percent_pnl).
-        High and consistent P&L → high score; volatile or negative → low.
+        Realized-first Sharpe: uses cash_pnl of resolved positions when
+        available (≥3 resolved).  Falls back to percent_pnl with a 30%
+        penalty when only unrealized data exists.
+        Resolved positions get ~70-100% weight; unrealized at most 30%.
         """
+        def _sharpe_ratio(vals):
+            avg = sum(vals) / len(vals)
+            std = (sum((x - avg) ** 2 for x in vals) / (len(vals) - 1)) ** 0.5
+            if std == 0:
+                return 1.0 if avg > 0 else 0.0
+            return avg / std
+
+        resolved = [p for p in positions if _is_resolved(p) and p.initial_value > 0]
+        open_pos  = [p for p in positions if not _is_resolved(p) and p.initial_value > 0]
+
+        if len(resolved) >= 3:
+            rs = _sharpe_ratio([p.cash_pnl for p in resolved])
+            realized_score = _clamp((rs + 1) / 2 * _R2, 0, _R2)
+
+            # Open positions contribute at most 30%, scaled by their count
+            open_weight = min(0.3, len(open_pos) / max(len(resolved), 1) * 0.3)
+            if len(open_pos) >= 3:
+                os_ = _sharpe_ratio([p.percent_pnl for p in open_pos])
+                open_score = _clamp((os_ + 1) / 2 * _R2, 0, _R2)
+            else:
+                open_score = _R2 * 0.5
+
+            return _clamp((1 - open_weight) * realized_score + open_weight * open_score, 0, _R2)
+
+        # Insufficient resolved data: use percent_pnl with 30% penalty
         pcts = [p.percent_pnl for p in positions if p.initial_value > 0]
         if len(pcts) < 3:
-            return _R2 * 0.5  # neutral
-
-        avg = sum(pcts) / len(pcts)
-        std = (sum((x - avg) ** 2 for x in pcts) / (len(pcts) - 1)) ** 0.5
-
-        if std == 0:
-            sharpe = 1.0 if avg > 0 else 0.0
-        else:
-            sharpe = avg / std
-
-        # sharpe -1 → 0pts, 0 → 5pts, +1 → 10pts
-        score = (sharpe + 1) / 2 * _R2
-        return _clamp(score, 0, _R2)
+            return _R2 * 0.5
+        sharpe = _sharpe_ratio(pcts)
+        return _clamp((sharpe + 1) / 2 * _R2 * 0.70, 0, _R2)
 
     # ── R3: Recency trend ────────────────────────────────────────────────────
 
@@ -292,7 +339,21 @@ class WalletScorer:
         """
         Compare win rate of positions whose BUY appeared in last 7d
         vs. overall win rate.  Improving → full score; declining → low.
+
+        Both win rates use resolved-aware logic: resolved positions use
+        _pos_won (definitive outcome); open positions fall back to percent_pnl.
+        This avoids contamination from stats.win_rate which is computed from
+        percent_pnl alone.
         """
+        def _resolved_aware_wr(pos_list) -> float:
+            if not pos_list:
+                return 0.0
+            wins = sum(
+                1 for p in pos_list
+                if (_pos_won(p) if _is_resolved(p) else p.percent_pnl > 0)
+            )
+            return wins / len(pos_list)
+
         now     = datetime.now(timezone.utc)
         cutoff  = (now - timedelta(days=7)).timestamp()
         pos_by_cid = {p.condition_id: p for p in positions if p.condition_id}
@@ -307,8 +368,10 @@ class WalletScorer:
         if len(recent_pos) < 2:
             return _R3 * 0.5  # neutral — too little recent data
 
-        recent_wr  = _win_rate(recent_pos)
-        overall_wr = stats.win_rate
+        recent_wr = _resolved_aware_wr(recent_pos)
+
+        all_valid = [p for p in positions if p.initial_value > 0]
+        overall_wr = _resolved_aware_wr(all_valid) if all_valid else stats.win_rate
 
         if recent_wr > overall_wr + 0.05:
             return float(_R3)         # improving
@@ -334,6 +397,8 @@ class WalletScorer:
 
         avg = sum(buy_sizes) / len(buy_sizes)
         score = _C1 * max(0, 1 - avg / 10_000)
+        if max(buy_sizes) >= 5_000:
+            score *= 0.80  # single high-impact trade reduces copyability
         return _clamp(score, 0, _C1)
 
     # ── C2: Signal freshness ─────────────────────────────────────────────────
@@ -358,6 +423,44 @@ class WalletScorer:
         tpd = len(buy_trades) / span_days
         score = _C2 * max(0, 1 - tpd / 5)  # 5 trades/day → 0pts
         return _clamp(score, 0, _C2)
+
+    # ── C3: Liquidity proxy ──────────────────────────────────────────────────
+
+    def _c3_liquidity(self, positions) -> float:
+        """
+        Proxy liquidity via market end_date on open positions.
+        Markets resolving >14d from now offer a viable copy window → full score.
+        Markets resolving in 7–14d → half score.
+        Markets resolving in <7d → no score (too close to copy profitably).
+        Unknown end_date → neutral (0.5 contribution).
+        """
+        from datetime import date as _date
+        today = datetime.now(timezone.utc).date()
+        horizon_good = today + timedelta(days=14)
+        horizon_poor = today + timedelta(days=7)
+
+        open_pos = [p for p in positions if not _is_resolved(p)]
+        if not open_pos:
+            return _C3 * 0.5
+
+        scored = []
+        for p in open_pos:
+            if not p.end_date:
+                scored.append(0.5)
+                continue
+            try:
+                ed = _date.fromisoformat(str(p.end_date)[:10])
+            except (ValueError, TypeError):
+                scored.append(0.5)
+                continue
+            if ed > horizon_good:
+                scored.append(1.0)
+            elif ed > horizon_poor:
+                scored.append(0.5)
+            else:
+                scored.append(0.0)
+
+        return _clamp(sum(scored) / len(scored) * _C3, 0, _C3)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -384,30 +487,55 @@ _CATEGORY_KEYWORDS = CATEGORY_KEYWORDS
 _MIN_CATEGORY_TRADES = 5  # need at least this many to call it a "strong" category
 
 
-def _strong_categories(trades) -> list[str]:
-    """Return categories where win rate is ≥60% with ≥5 trades."""
+def _strong_categories(trades, positions) -> list[str]:
+    """
+    Return categories where resolved win rate is ≥60% with ≥5 resolved BUY trades.
+    Falls back to volume-only (≥5 BUY trades, suffix "~") when insufficient
+    resolved data exists to compute a real win rate.
+    """
     from collections import defaultdict
-    category_trades: dict[str, list] = defaultdict(list)
+    pos_by_cid = {p.condition_id: p for p in positions if p.condition_id}
+    category_buys: dict[str, list] = defaultdict(list)
 
     for t in trades:
+        if t.side != "BUY":
+            continue
         title = (t.title or "").lower()
         for cat, keywords in _CATEGORY_KEYWORDS.items():
             if any(kw in title for kw in keywords):
-                category_trades[cat].append(t)
+                category_buys[cat].append(t)
                 break  # assign to first matching category only
 
     strong = []
-    for cat, cat_trades in category_trades.items():
-        buys = [t for t in cat_trades if t.side == "BUY"]
-        if len(buys) >= _MIN_CATEGORY_TRADES:
-            strong.append(cat)
+    for cat, buys in category_buys.items():
+        if len(buys) < _MIN_CATEGORY_TRADES:
+            continue
+
+        resolved_wins  = 0
+        resolved_total = 0
+        for t in buys:
+            p = pos_by_cid.get(t.condition_id)
+            if p and _is_resolved(p):
+                resolved_total += 1
+                if _pos_won(p):
+                    resolved_wins += 1
+
+        if resolved_total >= _MIN_CATEGORY_TRADES:
+            if resolved_wins / resolved_total >= 0.60:
+                strong.append(cat)
+        else:
+            # Not enough resolved outcomes — flag as volume-only signal
+            strong.append(f"{cat}~")
 
     return strong
 
 
-def _tier(total: float, insufficient: bool) -> str:
+def _tier(total: float, insufficient: bool, unique_markets: int = 0) -> str:
     if insufficient:
         return "?"
+    # Thin-sample cap: wallets with <25 unique markets cannot reach tier A
+    if unique_markets < 25 and total >= 80:
+        return "B"
     if total >= 80:
         return "A"
     if total >= 65:

@@ -57,7 +57,7 @@ class WalletAnalyzer:
 
     def _fetch_recent_trades(self, address: str, days: int = 30) -> list[Trade]:
         try:
-            raw = self._client.activity(address, limit=100)
+            raw = self._client.activity(address, limit=200)
         except Exception as exc:
             logger.warning("Failed to fetch activity for %s: %s", address, exc)
             return []
