@@ -129,26 +129,29 @@ class CopyTrader:
 
     def _select_target_wallets(self, scores: dict[str, WalletScore]) -> set[str]:
         """Select target wallets from scored candidates."""
-        eligible = [
-            ws for ws in scores.values()
-            if ws.copy_size_pct > 0 and not ws.insufficient_data
-        ]
-        if not eligible:
-            logger.warning("No eligible target wallets found after scoring.")
-            return set()
-
-        ranked_by_total = sorted(eligible, key=lambda ws: ws.total, reverse=True)
         refs = self._manual_refs
         selected: list[WalletScore]
         if refs:
-            matched = []
-            for ws in ranked_by_total:
-                names = {_normalize_wallet_ref(ws.address)}
-                if any(ref in names for ref in refs):
-                    matched.append(ws)
+            # Manual mode: match against ALL scored wallets — do not apply the
+            # eligibility filter (copy_size_pct / insufficient_data).  The user
+            # explicitly chose these addresses and we must honour all of them
+            # regardless of scoring confidence.
+            matched = [
+                ws for ws in scores.values()
+                if any(ref in {_normalize_wallet_ref(ws.address)} for ref in refs)
+            ]
             selected = matched
             mode = "manual"
         else:
+            # Auto mode: filter by eligibility, then pick top N by total score.
+            eligible = [
+                ws for ws in scores.values()
+                if ws.copy_size_pct > 0 and not ws.insufficient_data
+            ]
+            if not eligible:
+                logger.warning("No eligible target wallets found after scoring.")
+                return set()
+            ranked_by_total = sorted(eligible, key=lambda ws: ws.total, reverse=True)
             selected = ranked_by_total[: max(1, self._cfg.wallets_to_copy)]
             mode = "auto"
 
