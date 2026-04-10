@@ -48,6 +48,10 @@ logs/
 *.swp
 *.swo
 
+# Node / frontend build artifacts
+node_modules/
+*.tsbuildinfo
+
 # pytest / coverage
 .pytest_cache/
 .coverage
