@@ -17,6 +17,25 @@ from .settings import build_copier_config
 logger = logging.getLogger(__name__)
 
 
+def _load_scores_from_storage(storage) -> dict:
+    """Reconstruct {address: WalletScore} from persisted score_detail JSONB."""
+    from polymarket.models import WalletScore
+    from dataclasses import fields as dc_fields
+    valid_fields = {f.name for f in dc_fields(WalletScore)}
+    result = {}
+    for row in storage.get_wallets():
+        detail = row.get("score_detail")
+        if not detail:
+            continue
+        try:
+            kwargs = {k: v for k, v in detail.items() if k in valid_fields}
+            result[row["address"]] = WalletScore(**kwargs)
+        except Exception:
+            continue
+    logger.info("Loaded %d existing wallet scores from DB.", len(result))
+    return result
+
+
 @dataclass
 class WatcherState:
     task: asyncio.Task | None = None
@@ -173,10 +192,11 @@ async def _run_watcher(
             async with state._lock:
                 state.copy_enabled = True
 
-        # Compute scores (writes back to wallets table) — skipped when skip_recalculation=True
+        # Compute scores (writes back to wallets table) — or load from DB when skipping
         scores: dict = {}
         if skip_recalculation:
-            logger.info("Skipping wallet score recalculation (using existing scores).")
+            logger.info("Skipping wallet score recalculation — loading existing scores from DB.")
+            scores = await asyncio.to_thread(_load_scores_from_storage, storage)
         else:
             stats_list = []
             for w in wallets:
@@ -191,8 +211,11 @@ async def _run_watcher(
                 state.wallets_scored = len(scores)
 
         if copy_trader:
-            if scores:
-                copy_trader.update_scores(scores)
+            copy_trader.update_scores(scores)
+            # If scores were empty but manual refs are configured, seed targets directly
+            # so signals aren't rejected with "no scored wallets selected yet"
+            if not copy_trader._target_wallets and copy_trader._manual_refs:
+                copy_trader._target_wallets = set(copy_trader._manual_refs)
             wallet_name_map = {w.address: w.username for w in wallets}
             async with state._lock:
                 state.target_wallets = sorted(copy_trader._target_wallets)
