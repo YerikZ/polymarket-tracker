@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Loader2, Play, Square, Wifi, WifiOff } from "lucide-react";
 import { useWatcherStatus, useStartWatcher, useStopWatcher } from "../hooks/useWatcherStatus";
 import { fmtUsd } from "../lib/utils";
@@ -9,6 +10,7 @@ export function StatusBar() {
   const { data: status } = useWatcherStatus();
   const start = useStartWatcher();
   const stop = useStopWatcher();
+  const [skipRecalc, setSkipRecalc] = useState(true);
 
   const { data: pnl } = useQuery<PnlSummary>({
     queryKey: ["pnl-summary"],
@@ -147,9 +149,30 @@ export function StatusBar() {
           ))}
         </div>
 
+        {/* Skip recalculation toggle — only relevant before starting */}
+        {!isRunning && (
+          <label className="flex items-center gap-1.5 cursor-pointer select-none text-[10px]">
+            <div
+              onClick={() => setSkipRecalc((v) => !v)}
+              className={`relative w-7 h-4 rounded-full transition-colors ${
+                skipRecalc ? "bg-zinc-600" : "bg-emerald-600"
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${
+                  skipRecalc ? "translate-x-0.5" : "translate-x-3.5"
+                }`}
+              />
+            </div>
+            <span className={skipRecalc ? "text-zinc-500" : "text-emerald-400"}>
+              {skipRecalc ? "Skip rescore" : "Rescore on start"}
+            </span>
+          </label>
+        )}
+
         {/* Start/Stop */}
         <button
-          onClick={() => (isRunning ? stop.mutate() : start.mutate())}
+          onClick={() => (isRunning ? stop.mutate() : start.mutate(skipRecalc))}
           disabled={busy}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold transition-colors ${
             isRunning

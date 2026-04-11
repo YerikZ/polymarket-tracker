@@ -34,7 +34,12 @@ class WatcherState:
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
 
-async def start_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> None:
+async def start_watcher(
+    state: WatcherState,
+    storage: "Storage",
+    cfg: dict,
+    skip_recalculation: bool = True,
+) -> None:
     """Spawn the watcher background task from ``cfg``."""
     async with state._lock:
         if state.task is not None and not state.task.done():
@@ -49,7 +54,7 @@ async def start_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> N
 
     try:
         task = asyncio.create_task(
-            _run_watcher(state, storage, cfg),
+            _run_watcher(state, storage, cfg, skip_recalculation=skip_recalculation),
             name="polymarket-watcher",
         )
         async with state._lock:
@@ -100,7 +105,12 @@ async def stop_watcher(state: WatcherState) -> None:
         state._monitor = None
 
 
-async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> None:
+async def _run_watcher(
+    state: WatcherState,
+    storage: "Storage",
+    cfg: dict,
+    skip_recalculation: bool = True,
+) -> None:
     """Build all components from cfg and run the signal loop."""
     from polymarket.client import PolymarketClient
     from polymarket.scanner import LeaderboardScanner
@@ -163,20 +173,26 @@ async def _run_watcher(state: WatcherState, storage: "Storage", cfg: dict) -> No
             async with state._lock:
                 state.copy_enabled = True
 
-        # Compute scores (writes back to wallets table)
-        stats_list = []
-        for w in wallets:
-            try:
-                stats_list.append(await asyncio.to_thread(analyzer.analyze, w))
-            except Exception as exc:
-                logger.warning("Score analysis failed for %s: %s", w.username, exc)
+        # Compute scores (writes back to wallets table) — skipped when skip_recalculation=True
+        scores: dict = {}
+        if skip_recalculation:
+            logger.info("Skipping wallet score recalculation (using existing scores).")
+        else:
+            stats_list = []
+            for w in wallets:
+                try:
+                    stats_list.append(await asyncio.to_thread(analyzer.analyze, w))
+                except Exception as exc:
+                    logger.warning("Score analysis failed for %s: %s", w.username, exc)
 
-        scorer = WalletScorer()
-        scores = await asyncio.to_thread(scorer.score_all, stats_list, storage)
-        async with state._lock:
-            state.wallets_scored = len(scores)
+            scorer = WalletScorer()
+            scores = await asyncio.to_thread(scorer.score_all, stats_list, storage)
+            async with state._lock:
+                state.wallets_scored = len(scores)
+
         if copy_trader:
-            copy_trader.update_scores(scores)
+            if scores:
+                copy_trader.update_scores(scores)
             wallet_name_map = {w.address: w.username for w in wallets}
             async with state._lock:
                 state.target_wallets = sorted(copy_trader._target_wallets)

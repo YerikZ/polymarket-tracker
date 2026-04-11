@@ -31,7 +31,12 @@ export function useWatcherStatus() {
 export function useStartWatcher() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => fetch("/api/watcher/start", { method: "POST" }).then((r) => r.json()),
+    mutationFn: (skipRecalculation: boolean = true) =>
+      fetch("/api/watcher/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skip_recalculation: skipRecalculation }),
+      }).then((r) => r.json()),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["watcher-status"] }),
   });
 }
