@@ -74,6 +74,7 @@ class PolymarketClient:
     def leaderboard(
         self,
         limit: int = 50,
+        offset: int = 0,
         order_by: str = "PNL",
         time_period: str = "ALL",
         category: str = "OVERALL",
@@ -83,6 +84,7 @@ class PolymarketClient:
             "/v1/leaderboard",
             params={
                 "limit": limit,
+                "offset": offset,
                 "orderBy": order_by,
                 "timePeriod": time_period,
                 "category": category,

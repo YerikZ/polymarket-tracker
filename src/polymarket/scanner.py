@@ -21,6 +21,8 @@ class LeaderboardScanner:
         self._top_n = top_n
         self._ttl = leaderboard_ttl
 
+    _PAGE_SIZE = 100  # entries per leaderboard API call
+
     def fetch_top_wallets(self, force_refresh: bool = False) -> list[Wallet]:
         if not force_refresh and self._is_cache_fresh():
             raw = self._storage.get_wallets()
@@ -29,35 +31,48 @@ class LeaderboardScanner:
             return wallets[: self._top_n]
 
         logger.info("Fetching leaderboard (top %d by all-time P&L)…", self._top_n)
-        entries = self._client.leaderboard(limit=self._top_n * 2)  # fetch extra in case some fail to resolve
 
         wallets: list[Wallet] = []
         now = datetime.now(timezone.utc).isoformat()
+        offset = 0
 
-        for entry in entries:
-            if len(wallets) >= self._top_n:
-                break
-
-            username = entry.get("userName") or entry.get("name") or entry.get("username") or ""
-            pnl = float(entry.get("pnl") or entry.get("profitLoss") or 0)
-            volume = float(entry.get("vol") or entry.get("tradingVolume") or entry.get("volume") or 0)
-            rank = int(entry.get("rank") or 0)
-
-            address = self._resolve_address(entry)
-            if not address:
-                logger.debug("Skipping %s — could not resolve wallet address.", username)
-                continue
-
-            wallets.append(
-                Wallet(
-                    address=address,
-                    username=username,
-                    rank=rank,
-                    pnl=pnl,
-                    trading_volume=volume,
-                    fetched_at=now,
-                )
+        while len(wallets) < self._top_n:
+            entries = self._client.leaderboard(
+                limit=self._PAGE_SIZE,
+                offset=offset,
             )
+            if not entries:
+                break  # API returned nothing — no more pages
+
+            for entry in entries:
+                if len(wallets) >= self._top_n:
+                    break
+
+                username = entry.get("userName") or entry.get("name") or entry.get("username") or ""
+                pnl = float(entry.get("pnl") or entry.get("profitLoss") or 0)
+                volume = float(entry.get("vol") or entry.get("tradingVolume") or entry.get("volume") or 0)
+                rank = int(entry.get("rank") or 0)
+
+                address = self._resolve_address(entry)
+                if not address:
+                    logger.debug("Skipping %s — could not resolve wallet address.", username)
+                    continue
+
+                wallets.append(
+                    Wallet(
+                        address=address,
+                        username=username,
+                        rank=rank,
+                        pnl=pnl,
+                        trading_volume=volume,
+                        fetched_at=now,
+                    )
+                )
+
+            if len(entries) < self._PAGE_SIZE:
+                break  # last page was partial — no more data
+
+            offset += self._PAGE_SIZE
 
         if wallets:
             self._storage.save_wallets(wallets)
