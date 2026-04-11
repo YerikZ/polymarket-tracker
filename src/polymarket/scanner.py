@@ -33,6 +33,7 @@ class LeaderboardScanner:
         logger.info("Fetching leaderboard (top %d by all-time P&L)…", self._top_n)
 
         wallets: list[Wallet] = []
+        seen_addresses: set[str] = set()
         now = datetime.now(timezone.utc).isoformat()
         offset = 0
 
@@ -57,6 +58,9 @@ class LeaderboardScanner:
                 if not address:
                     logger.debug("Skipping %s — could not resolve wallet address.", username)
                     continue
+                if address in seen_addresses:
+                    continue
+                seen_addresses.add(address)
 
                 wallets.append(
                     Wallet(
