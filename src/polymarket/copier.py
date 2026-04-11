@@ -46,6 +46,9 @@ def _expand_keywords(keywords: list[str]) -> list[str]:
 
 logger = logging.getLogger(__name__)
 
+# Polymarket API rejects orders whose USDC value is below this threshold
+_POLY_MIN_ORDER_USDC = 1.0
+
 
 def _normalize_wallet_ref(value: str) -> str:
     return value.strip().lower()
@@ -326,6 +329,15 @@ class CopyTrader:
 
         # Cap per trade
         spend = min(spend, self._cfg.max_trade_usdc)
+
+        # Polymarket API enforces a $1 USDC minimum per order
+        if spend < _POLY_MIN_ORDER_USDC:
+            self._pending_buys.discard(market_key)
+            return CopyResult(
+                signal=signal, status="skipped",
+                reason=f"Computed spend ${spend:.2f} is below API minimum of ${_POLY_MIN_ORDER_USDC:.2f} USDC",
+            )
+
         shares = round(spend / order_price, 2)
 
         if self._cfg.dry_run or cap_hit:
@@ -386,6 +398,14 @@ class CopyTrader:
             return CopyResult(signal=signal, status="skipped", reason="Computed top-up spend is $0")
 
         spend = min(spend, self._cfg.max_trade_usdc)
+
+        # Polymarket API enforces a $1 USDC minimum per order
+        if spend < _POLY_MIN_ORDER_USDC:
+            return CopyResult(
+                signal=signal, status="skipped",
+                reason=f"Top-up spend ${spend:.2f} is below API minimum of ${_POLY_MIN_ORDER_USDC:.2f} USDC",
+            )
+
         spent_today = self._storage.get_daily_spend(date.today().isoformat())
         remaining_daily = self._cfg.daily_limit_usdc - spent_today
         if spend > remaining_daily:
