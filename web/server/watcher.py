@@ -201,6 +201,13 @@ async def _run_watcher(
                     for address in state.target_wallets
                 ]
                 state.target_mode = "manual" if copy_trader._cfg.manual_target_wallets else "auto"
+            target_mode_label = "manual" if copy_trader._cfg.manual_target_wallets else "auto"
+            logger.info(
+                "Copy targets (%s): %d wallet(s) — %s",
+                target_mode_label,
+                len(state.target_wallets),
+                ", ".join(state.target_wallet_usernames) or "none",
+            )
 
         # ── Sync callback (monitor / poll path) ─────────────────────────────
         # monitor.run() executes in a thread-pool thread (asyncio.to_thread),

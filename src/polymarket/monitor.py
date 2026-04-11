@@ -60,7 +60,7 @@ class SignalMonitor:
         """
         self._stop_event.clear()
         logger.info(
-            "Starting monitor: %d wallets, poll every %ds, min size $%.0f",
+            "Starting monitor: scanning up to %d wallets, poll every %ds, min size $%.0f",
             self._scanner._top_n,
             self._interval,
             self._min_size,
@@ -68,10 +68,10 @@ class SignalMonitor:
         poll_count = 0
         while not self._stop_event.is_set():
             poll_count += 1
-            logger.info("Poll #%d …", poll_count)
             try:
                 # Force refresh only on the first poll — subsequent polls use TTL normally
                 wallets = self._scanner.fetch_top_wallets(force_refresh=force_refresh and poll_count == 1)
+                logger.info("Poll #%d — %d wallets to check", poll_count, len(wallets))
                 for wallet in wallets:
                     if self._stop_event.is_set():
                         break
