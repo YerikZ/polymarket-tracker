@@ -21,7 +21,7 @@ class LeaderboardScanner:
         self._top_n = top_n
         self._ttl = leaderboard_ttl
 
-    _PAGE_SIZE = 100  # entries per leaderboard API call
+    _PAGE_SIZE = 50  # API hard cap — returns at most 50 per call regardless of limit
 
     def fetch_top_wallets(self, force_refresh: bool = False) -> list[Wallet]:
         if not force_refresh and self._is_cache_fresh():
@@ -42,7 +42,7 @@ class LeaderboardScanner:
                 offset=offset,
             )
             if not entries:
-                break  # API returned nothing — no more pages
+                break  # API returned nothing — exhausted
 
             for entry in entries:
                 if len(wallets) >= self._top_n:
@@ -70,7 +70,7 @@ class LeaderboardScanner:
                 )
 
             if len(entries) < self._PAGE_SIZE:
-                break  # last page was partial — no more data
+                break  # partial page — no more data available
 
             offset += self._PAGE_SIZE
 
