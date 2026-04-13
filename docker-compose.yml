@@ -17,12 +17,28 @@ services:
       timeout: 5s
       retries: 10
 
+  vpn:
+    image: qmcgaw/gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - VPN_SERVICE_PROVIDER=nordvpn
+      - VPN_TYPE=openvpn
+      - OPENVPN_PROTOCOL=tcp
+      - OPENVPN_USER=${NORDVPN_SERVICE_USER}
+      - OPENVPN_PASSWORD=${NORDVPN_SERVICE_PASS}
+      - SERVER_CATEGORIES=P2P
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
   web:
     build:
       context: .
       dockerfile: Dockerfile
-    ports:
-      - "8080:8080"
+    network_mode: "service:vpn"
     environment:
       POLYMARKET_DATABASE_URL: postgresql://polymarket:polymarket@db:5432/polymarket
       POLYMARKET_PRIVATE_KEY: ${POLYMARKET_PRIVATE_KEY:-}
@@ -31,6 +47,8 @@ services:
       POLYMARKET_POLYGON_WSS: ${POLYMARKET_POLYGON_WSS:-}
     depends_on:
       db:
+        condition: service_healthy
+      vpn:
         condition: service_healthy
     restart: unless-stopped
 
