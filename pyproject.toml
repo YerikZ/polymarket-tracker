@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "CLI tool for tracking profitable Polymarket wallets and generating copy-trade signals"
 requires-python = ">=3.9"
 dependencies = [
-    "requests>=2.31.0",
+    "requests[socks]>=2.31.0",
     "rich>=13.0.0",
     "pyyaml>=6.0",
     "py-clob-client>=0.17.0",
