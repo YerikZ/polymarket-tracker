@@ -399,13 +399,12 @@ class CopyTrader:
 
         spend = min(spend, self._cfg.max_trade_usdc)
 
-        # Polymarket API enforces a $1 USDC minimum per order — floor rather than skip
+        # Polymarket API enforces a $1 USDC minimum per order
         if spend < _POLY_MIN_ORDER_USDC:
-            logger.debug(
-                "Top-up spend $%.2f below API minimum; flooring to $%.2f",
-                spend, _POLY_MIN_ORDER_USDC,
+            return CopyResult(
+                signal=signal, status="skipped",
+                reason=f"Computed top-up spend ${spend:.2f} is below API minimum of ${_POLY_MIN_ORDER_USDC:.2f} USDC",
             )
-            spend = _POLY_MIN_ORDER_USDC
 
         spent_today = self._storage.get_daily_spend(date.today().isoformat())
         remaining_daily = self._cfg.daily_limit_usdc - spent_today
