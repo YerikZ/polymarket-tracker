@@ -163,6 +163,9 @@ async def _run_watcher(
         client = PolymarketClient(
             request_delay=request_delay,
             max_retries=max_retries,
+            proxy_url=cfg.get("proxy_url", "").strip(),
+            proxy_username=cfg.get("proxy_username", "").strip(),
+            proxy_password=cfg.get("proxy_password", "").strip(),
         )
         scanner = LeaderboardScanner(
             client=client,

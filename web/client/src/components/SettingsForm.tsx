@@ -468,6 +468,31 @@ export function SettingsForm() {
             placeholder="wss://polygon-mainnet.g.alchemy.com/v2/…"
           />
         </Field>
+        <Field label="Proxy server" hint="SOCKS5 or HTTP proxy — e.g. socks5h://us6354.nordvpn.com:1080">
+          <input
+            type="text"
+            value={local.proxy_url ?? ""}
+            onChange={(e) => set("proxy_url", e.target.value)}
+            placeholder="socks5h://hostname:1080"
+            className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-xs text-zinc-100 w-full focus:outline-none focus:border-zinc-500 placeholder:text-zinc-600"
+          />
+        </Field>
+        <Field label="Proxy username" hint="NordVPN service username (e.g. ab12345678)">
+          <input
+            type="text"
+            value={local.proxy_username ?? ""}
+            onChange={(e) => set("proxy_username", e.target.value)}
+            placeholder="ab12345678"
+            className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-xs text-zinc-100 w-full focus:outline-none focus:border-zinc-500 placeholder:text-zinc-600"
+          />
+        </Field>
+        <Field label="Proxy password" hint="Leave blank to keep existing value">
+          <SecretInput
+            value={local.proxy_password}
+            onChange={(v) => set("proxy_password", v)}
+            placeholder="NordVPN service password"
+          />
+        </Field>
       </Section>
     </form>
   );

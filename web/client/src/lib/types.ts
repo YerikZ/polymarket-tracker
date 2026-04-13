@@ -112,6 +112,9 @@ export interface Settings {
   max_signal_age?: number;
   watcher_mode?: "stream" | "poll";
   polygon_wss?: string;
+  proxy_url?: string;
+  proxy_username?: string;
+  proxy_password?: string;
   copy_trading?: {
     private_key?: string;
     funder?: string;

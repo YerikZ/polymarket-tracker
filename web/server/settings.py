@@ -27,6 +27,9 @@ _DEFAULTS: dict = {
     "log_level": "INFO",
     "watcher_mode": "poll",
     "polygon_wss": "",
+    "proxy_url": "",
+    "proxy_username": "",
+    "proxy_password": "",
     "copy_trading": {
         "dry_run": True,
         "signature_type": 1,
@@ -53,7 +56,7 @@ _DEFAULTS: dict = {
 }
 
 # Fields never returned in GET /api/settings (shown masked instead)
-_SENSITIVE = {"private_key", "polygon_wss"}
+_SENSITIVE = {"private_key", "polygon_wss", "proxy_password"}
 
 # Nested sensitive fields under copy_trading
 _SENSITIVE_NESTED = {"private_key"}

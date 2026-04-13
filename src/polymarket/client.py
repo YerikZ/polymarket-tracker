@@ -13,12 +13,32 @@ CLOB_API  = "https://clob.polymarket.com"
 
 
 class PolymarketClient:
-    def __init__(self, request_delay: float = 0.5, max_retries: int = 3):
+    def __init__(
+        self,
+        request_delay: float = 0.5,
+        max_retries: int = 3,
+        proxy_url: str = "",
+        proxy_username: str = "",
+        proxy_password: str = "",
+    ):
         self._delay = request_delay
         self._max_retries = max_retries
         self._session = requests.Session()
         self._session.headers.update({"Accept": "application/json"})
         self._last_call: float = 0.0
+
+        if proxy_url:
+            from urllib.parse import urlparse, urlunparse
+            parsed = urlparse(proxy_url)
+            if proxy_username and proxy_password:
+                netloc = f"{proxy_username}:{proxy_password}@{parsed.hostname}"
+                if parsed.port:
+                    netloc += f":{parsed.port}"
+                proxy_with_creds = urlunparse(parsed._replace(netloc=netloc))
+            else:
+                proxy_with_creds = proxy_url
+            self._session.proxies = {"http": proxy_with_creds, "https": proxy_with_creds}
+            logger.info("Proxy configured: %s", parsed.hostname)
 
     def _throttle(self) -> None:
         elapsed = time.monotonic() - self._last_call
