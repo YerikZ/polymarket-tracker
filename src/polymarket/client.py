@@ -162,18 +162,23 @@ class PolymarketClient:
         offset = 0
 
         for _ in range(max_pages):
-            batch = self.get(
-                DATA_API,
-                "/activity",
-                params={
-                    "user": address,
-                    "limit": page_size,
-                    "offset": offset,
-                    "type": "TRADE",
-                    "sortBy": "TIMESTAMP",
-                    "sortDirection": "DESC",
-                },
-            )
+            try:
+                batch = self.get(
+                    DATA_API,
+                    "/activity",
+                    params={
+                        "user": address,
+                        "limit": page_size,
+                        "offset": offset,
+                        "type": "TRADE",
+                        "sortBy": "TIMESTAMP",
+                        "sortDirection": "DESC",
+                    },
+                )
+            except Exception as exc:
+                # 400 typically means the offset exceeded the API's limit — stop cleanly
+                logger.debug("activity_paginated stopping at offset %d: %s", offset, exc)
+                break
             if not batch:
                 break
 
