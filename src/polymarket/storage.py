@@ -605,7 +605,7 @@ class Storage:
                     cur,
                     """
                     INSERT INTO market_outcomes
-                        (condition_id, closed, resolved, winner_outcome, winner_token_id, checked_at)
+                        (condition_id, closed, resolved, winner_outcome, winner_token_id)
                     VALUES %s
                     ON CONFLICT (condition_id) DO UPDATE SET
                         closed          = EXCLUDED.closed,
