@@ -15,7 +15,6 @@ _DEFAULTS = {
     "wallet_refresh_interval": 600,
     "database_url": "postgresql://polymarket:polymarket@localhost:5433/polymarket",
     "copy_trading": {
-        "wallets_to_copy": 5,
         "manual_target_wallets": [],
     },
 }

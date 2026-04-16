@@ -93,11 +93,8 @@ copy_trading:
   # e.g. Tier B (0.7) × $50 = $35 actual spend
   score_scale_size: true
 
-  # When manual_target_wallets is empty, use the top scored N wallets as active targets.
-  wallets_to_copy: 5
-
-  # Optional manual override for the active target set.
-  # These should be wallet addresses from the scored wallet pool.
+  # Wallet addresses to copy-trade. Must be set explicitly — there is no
+  # auto-copy fallback. Leave empty to disable copy trading (scanning still runs).
   manual_target_wallets: []
 
   # Repeated-order top-up: if an active target buys the same market again,

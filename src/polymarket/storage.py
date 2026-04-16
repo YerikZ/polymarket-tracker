@@ -489,3 +489,145 @@ class Storage:
                     """,
                     (score, tier, json.dumps(detail), address),
                 )
+
+    # ── Wallet trade history ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _normalise_ts(val) -> datetime:
+        """Convert API timestamp (int seconds or ms, or datetime) to UTC datetime."""
+        if isinstance(val, datetime):
+            return val if val.tzinfo else val.replace(tzinfo=timezone.utc)
+        ts = int(val or 0)
+        if ts > 1_000_000_000_000:
+            ts = ts // 1000
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+    def upsert_wallet_trades(self, address: str, trades: list[dict]) -> int:
+        """Insert new trades for a wallet; skip duplicates by (address, tx_hash).
+        Returns number of rows actually inserted."""
+        if not trades:
+            return 0
+        rows = []
+        for t in trades:
+            tx = t.get("transactionHash") or t.get("transaction_hash") or ""
+            try:
+                traded_at = self._normalise_ts(t.get("timestamp"))
+            except Exception:
+                continue
+            rows.append((
+                address,
+                t.get("conditionId") or t.get("condition_id") or "",
+                t.get("tokenId") or t.get("token_id") or "",
+                t.get("title") or "",
+                t.get("outcome") or "",
+                (t.get("side") or "").upper(),
+                float(t.get("size") or 0),
+                float(t.get("usdcSize") or t.get("usdc_size") or 0),
+                float(t.get("price") or 0),
+                traded_at,
+                tx,
+            ))
+        if not rows:
+            return 0
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                psycopg2.extras.execute_values(
+                    cur,
+                    """
+                    INSERT INTO wallet_trades
+                        (address, condition_id, token_id, title, outcome, side,
+                         size, usdc_size, price, traded_at, transaction_hash)
+                    VALUES %s
+                    ON CONFLICT (address, transaction_hash)
+                        WHERE transaction_hash <> ''
+                    DO NOTHING
+                    """,
+                    rows,
+                )
+                return cur.rowcount
+
+    def get_wallet_trades(self, address: str, since_days: int = 90) -> list[dict]:
+        """Return trades joined with market_outcomes for horizon metric computation."""
+        with db.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        wt.id, wt.address, wt.condition_id, wt.token_id,
+                        wt.title, wt.outcome, wt.side, wt.size, wt.usdc_size,
+                        wt.price, wt.traded_at, wt.transaction_hash,
+                        mo.resolved,
+                        mo.winner_outcome,
+                        mo.winner_token_id,
+                        mo.closed AS market_closed
+                    FROM wallet_trades wt
+                    LEFT JOIN market_outcomes mo USING (condition_id)
+                    WHERE wt.address = %s
+                      AND wt.traded_at >= now() - (%s || ' days')::interval
+                    ORDER BY wt.traded_at DESC
+                    """,
+                    (address, str(since_days)),
+                )
+                return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def get_trade_last_fetched_at(self, address: str) -> datetime | None:
+        """Return the most recent fetched_at for this wallet's trades, or None."""
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT MAX(fetched_at) FROM wallet_trades WHERE address = %s",
+                    (address,),
+                )
+                row = cur.fetchone()
+                return row[0] if row and row[0] else None
+
+    def upsert_market_outcomes(self, outcomes: dict) -> None:
+        """Upsert market resolution status. outcomes: {condition_id: {resolved, winner_outcome, ...}}"""
+        if not outcomes:
+            return
+        rows = [
+            (
+                cid,
+                bool(d.get("closed", False)),
+                bool(d.get("resolved", False)),
+                d.get("winner_outcome") or d.get("winner") or "",
+                d.get("winner_token_id") or "",
+            )
+            for cid, d in outcomes.items()
+            if cid
+        ]
+        if not rows:
+            return
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                psycopg2.extras.execute_values(
+                    cur,
+                    """
+                    INSERT INTO market_outcomes
+                        (condition_id, closed, resolved, winner_outcome, winner_token_id, checked_at)
+                    VALUES %s
+                    ON CONFLICT (condition_id) DO UPDATE SET
+                        closed          = EXCLUDED.closed,
+                        resolved        = EXCLUDED.resolved,
+                        winner_outcome  = EXCLUDED.winner_outcome,
+                        winner_token_id = EXCLUDED.winner_token_id,
+                        checked_at      = now()
+                    """,
+                    rows,
+                )
+
+    def get_unresolved_condition_ids(self, cids: list[str]) -> list[str]:
+        """Return condition_ids that are either missing from market_outcomes or not yet resolved."""
+        if not cids:
+            return []
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT condition_id FROM market_outcomes
+                    WHERE condition_id = ANY(%s) AND resolved = TRUE
+                    """,
+                    (cids,),
+                )
+                already_resolved = {row[0] for row in cur.fetchall()}
+        return [c for c in cids if c and c not in already_resolved]

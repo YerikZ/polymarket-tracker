@@ -143,6 +143,56 @@ class PolymarketClient:
             params={"user": address, "limit": limit, "type": trade_type, "sortBy": "TIMESTAMP", "sortDirection": "DESC"},
         )
 
+    def activity_paginated(
+        self,
+        address: str,
+        days: int = 90,
+        page_size: int = 200,
+        max_pages: int = 20,
+    ) -> list[dict]:
+        """Fetch all trades within `days` by paginating with offset.
+
+        Returns a flat list of raw activity dicts sorted newest-first.
+        Stops early when the oldest item in a batch predates the cutoff.
+        """
+        from datetime import datetime, timezone, timedelta
+        cutoff_ts = (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
+
+        all_trades: list[dict] = []
+        offset = 0
+
+        for _ in range(max_pages):
+            batch = self.get(
+                DATA_API,
+                "/activity",
+                params={
+                    "user": address,
+                    "limit": page_size,
+                    "offset": offset,
+                    "type": "TRADE",
+                    "sortBy": "TIMESTAMP",
+                    "sortDirection": "DESC",
+                },
+            )
+            if not batch:
+                break
+
+            passed_cutoff = False
+            for item in batch:
+                ts = int(item.get("timestamp") or 0)
+                if ts > 1e12:
+                    ts = ts // 1000
+                if ts and ts < cutoff_ts:
+                    passed_cutoff = True
+                    break
+                all_trades.append(item)
+
+            if passed_cutoff or len(batch) < page_size:
+                break
+            offset += page_size
+
+        return all_trades
+
     def markets(self, condition_ids: list[str]) -> list[dict]:
         """Fetch market data for a list of condition IDs.
 

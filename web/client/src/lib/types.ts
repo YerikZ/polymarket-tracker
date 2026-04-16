@@ -102,6 +102,26 @@ export interface WatcherStatus {
   error: string | null;
 }
 
+export interface HorizonMetrics {
+  trade_count: number;
+  buy_count: number;
+  avg_order_usdc: number;
+  median_order_usdc: number;
+  total_invested: number;
+  unique_markets: number;
+  active_days: number;
+  win_rate: number | null;
+  resolved_count: number;
+  avg_entry_price: number | null;
+}
+
+export interface WalletTradeDetail {
+  address: string;
+  last_fetched_at: string | null;
+  horizons: Record<"7" | "14" | "30" | "60" | "90", HorizonMetrics>;
+  raw_trade_count: number;
+}
+
 export interface Settings {
   top_n?: number;
   poll_interval?: number;
@@ -132,7 +152,6 @@ export interface Settings {
     slippage?: number;
     min_score?: number;
     score_scale_size?: boolean;
-    wallets_to_copy?: number;
     manual_target_wallets?: string[];
     enable_topup?: boolean;
     max_topups?: number;

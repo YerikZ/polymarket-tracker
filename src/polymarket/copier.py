@@ -94,8 +94,7 @@ class CopierConfig:
     min_score: float = 50.0             # skip wallets with score below this (0 = disable)
     score_scale_size: bool = True        # scale position size by wallet's copy_size_pct
 
-    # Target selection
-    wallets_to_copy: int = 5
+    # Target selection — manual list only; no auto-copy fallback
     manual_target_wallets: list[str] = field(default_factory=list)
 
     # Repeated-order top-up
@@ -131,45 +130,26 @@ class CopyTrader:
         logger.info("Score cache updated for %d wallets.", len(scores))
 
     def _select_target_wallets(self, scores: dict[str, WalletScore]) -> set[str]:
-        """Select target wallets from scored candidates."""
+        """Select target wallets from scored candidates — manual list only."""
         refs = self._manual_refs
-        selected: list[WalletScore]
-        if refs:
-            # Manual mode: match against ALL scored wallets — do not apply the
-            # eligibility filter (copy_size_pct / insufficient_data).  The user
-            # explicitly chose these addresses and we must honour all of them
-            # regardless of scoring confidence.
-            matched = [
-                ws for ws in scores.values()
-                if any(ref in {_normalize_wallet_ref(ws.address)} for ref in refs)
-            ]
-            selected = matched
-            mode = "manual"
-        else:
-            # Auto mode: filter by eligibility, then pick top N by total score.
-            eligible = [
-                ws for ws in scores.values()
-                if ws.copy_size_pct > 0 and not ws.insufficient_data
-            ]
-            if not eligible:
-                logger.warning("No eligible target wallets found after scoring.")
-                return set()
-            ranked_by_total = sorted(eligible, key=lambda ws: ws.total, reverse=True)
-            selected = ranked_by_total[: max(1, self._cfg.wallets_to_copy)]
-            mode = "auto"
-
-        if not selected:
-            logger.warning("Target selection mode '%s' produced no scored wallets.", mode)
+        if not refs:
+            logger.info("No manual target wallets configured — copy trading inactive.")
             return set()
 
-        target_wallets = {ws.address for ws in selected}
+        matched = [
+            ws for ws in scores.values()
+            if any(ref in {_normalize_wallet_ref(ws.address)} for ref in refs)
+        ]
+        if not matched:
+            logger.warning("Manual refs configured but none matched scored wallets.")
+            return set()
+
         logger.info(
-            "Selected %d target wallet(s) in %s mode: %s",
-            len(selected),
-            mode,
-            ", ".join(ws.address for ws in selected),
+            "Selected %d manual target wallet(s): %s",
+            len(matched),
+            ", ".join(ws.address for ws in matched),
         )
-        return target_wallets
+        return {ws.address for ws in matched}
 
     def is_daily_limit_reached(self) -> bool:
         """Return True if today's spend has hit or exceeded the daily cap."""

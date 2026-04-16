@@ -369,10 +369,7 @@ export function SettingsForm() {
         <Field label="Min score (0–100)" hint="Targets still need to pass this score gate">
           <NumInput value={ct.min_score} onChange={(v) => setCt("min_score", v)} />
         </Field>
-        <Field label="Wallets to copy/watch" hint="Used only when the manual target list is empty">
-          <NumInput value={ct.wallets_to_copy ?? 5} onChange={(v) => setCt("wallets_to_copy", v)} step={1} />
-        </Field>
-        <Field label="Manual target wallets" hint="Optional override. Add wallet addresses from the scored set to watch and copy directly">
+        <Field label="Manual target wallets" hint="Wallet addresses to copy. Leave empty to disable copy trading (scanning still runs).">
           <TagInput
             tags={ct.manual_target_wallets ?? []}
             onChange={(tags) => setCt("manual_target_wallets", tags)}

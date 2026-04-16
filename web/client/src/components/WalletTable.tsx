@@ -7,11 +7,13 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  BarChart2,
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Settings, Wallet } from "../lib/types";
 import { TierBadge } from "./TierBadge";
 import { ScoreBreakdown } from "./ScoreBreakdown";
+import { WalletDetail } from "./WalletDetail";
 import { fmtUsd } from "../lib/utils";
 
 // ── Sort ─────────────────────────────────────────────────────────────────────
@@ -165,6 +167,7 @@ function PillButton({
 
 export function WalletTable() {
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [detailWallet, setDetailWallet] = useState<Wallet | null>(null);
 
   // Sort state
   const [sortField, setSortField] = useState<SortField>("rank");
@@ -421,13 +424,14 @@ export function WalletTable() {
               <SortIcon active={sortField === "score"} dir={sortDir} />
             </th>
             <th className="px-4 py-2 font-medium">Manual Target</th>
+            <th className="px-4 py-2 font-medium">Analytics</th>
           </tr>
         </thead>
         <tbody>
           {displayedWallets.length === 0 && (
             <tr>
               <td
-                colSpan={7}
+                colSpan={8}
                 className="text-center text-zinc-600 py-16"
               >
                 {wallets.length === 0
@@ -505,10 +509,23 @@ export function WalletTable() {
                       : "Pick"}
                   </button>
                 </td>
+                <td className="px-4 py-2">
+                  <button
+                    type="button"
+                    title="View trade analytics"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDetailWallet(w);
+                    }}
+                    className="p-1.5 rounded hover:bg-zinc-700 text-zinc-500 hover:text-emerald-400 transition-colors"
+                  >
+                    <BarChart2 className="w-3.5 h-3.5" />
+                  </button>
+                </td>
               </tr>
               {expanded === w.address && w.score_detail && (
                 <tr className="border-b border-zinc-900 bg-zinc-900/30">
-                  <td colSpan={7}>
+                  <td colSpan={8}>
                     <ScoreBreakdown detail={w.score_detail} />
                   </td>
                 </tr>
@@ -517,6 +534,11 @@ export function WalletTable() {
           ))}
         </tbody>
       </table>
+
+      <WalletDetail
+        wallet={detailWallet}
+        onClose={() => setDetailWallet(null)}
+      />
     </div>
   );
 }
