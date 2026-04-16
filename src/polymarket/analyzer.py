@@ -159,8 +159,13 @@ def compute_horizon_metrics(trades: list[dict], days: int) -> dict[str, Any]:
     unique_cids = {t.get("condition_id") for t in buys if t.get("condition_id")}
     all_dates = {_dt(t).date() for t in window}
 
-    # Win rate — only among resolved markets
-    resolved_buys = [t for t in buys if t.get("resolved")]
+    # Win rate — markets that are resolved OR have a clear winner recorded.
+    # winner_outcome/winner_token_id may be set even when resolved=False due to
+    # a previous storage bug (resolved flag was not derived from winner presence).
+    resolved_buys = [
+        t for t in buys
+        if t.get("resolved") or t.get("winner_outcome") or t.get("winner_token_id")
+    ]
     wins = 0
     for t in resolved_buys:
         wt = (t.get("winner_token_id") or "").strip()

@@ -294,9 +294,9 @@ class PolymarketClient:
             closed           = bool(m.get("closed", False))
             accepting_orders = bool(m.get("acceptingOrders", True))
             uma_status       = m.get("umaResolutionStatus") or ""
-            resolved         = uma_status == "resolved" or (closed and not accepting_orders)
 
             # Determine winner from outcomePrices + clobTokenIds
+            # (must run before resolved check so winner presence can inform it)
             winner_outcome  = ""
             winner_token_id = ""
             try:
@@ -316,6 +316,14 @@ class PolymarketClient:
                         winner_token_id = str(tokens[winner_idx])  if winner_idx < len(tokens)  else ""
             except Exception as exc:
                 logger.debug("Could not parse resolution for %s: %s", cid[:16], exc)
+
+            # A market is resolved if UMA settled it, it's closed with no orders,
+            # OR a clear price winner (≥95%) was found (effectively settled).
+            resolved = (
+                uma_status == "resolved"
+                or (closed and not accepting_orders)
+                or bool(winner_outcome)
+            )
 
             statuses[cid] = {
                 "closed":           closed,

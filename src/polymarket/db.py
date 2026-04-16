@@ -174,6 +174,12 @@ CREATE TABLE IF NOT EXISTS market_outcomes (
     closed          BOOLEAN     NOT NULL DEFAULT FALSE,
     checked_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Back-fill: rows with a clear winner (outcome price >=95%) should be resolved.
+UPDATE market_outcomes
+   SET resolved = TRUE
+ WHERE winner_outcome <> ''
+   AND resolved = FALSE;
 """
 
 
