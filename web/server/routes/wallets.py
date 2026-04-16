@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+
+logger = logging.getLogger(__name__)
 
 from polymarket.analyzer import WalletAnalyzer, compute_all_horizons
 from polymarket.client import PolymarketClient
@@ -55,14 +58,14 @@ async def refresh_wallets(request: Request):
 
 
 @router.post("/fetch-all-trades")
-async def fetch_all_wallet_trades(request: Request):
-    """Fetch and refresh trade history for every known wallet sequentially."""
+async def fetch_all_wallet_trades(request: Request, background_tasks: BackgroundTasks):
+    """Kick off a background job that fetches trade history for every known wallet."""
     storage = request.app.state.storage
     seed_cfg = request.app.state.seed_cfg
     cfg = await asyncio.to_thread(settings_helpers.get_settings, storage, seed_cfg)
+    wallets = await asyncio.to_thread(storage.get_wallets)
 
     def _run():
-        wallets = storage.get_wallets()
         total = len(wallets)
         fetched = 0
         errors = 0
@@ -71,14 +74,12 @@ async def fetch_all_wallet_trades(request: Request):
                 _fetch_and_compute(w["address"], storage, cfg, force=True)
                 fetched += 1
             except Exception as exc:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "fetch-all-trades failed for %s: %s", w["address"][:10], exc
-                )
+                logger.warning("fetch-all-trades failed for %s: %s", w["address"][:10], exc)
                 errors += 1
-        return {"status": "ok", "total": total, "fetched": fetched, "errors": errors}
+        logger.info("fetch-all-trades complete: %d/%d fetched, %d errors", fetched, total, errors)
 
-    return await asyncio.to_thread(_run)
+    background_tasks.add_task(_run)
+    return {"status": "started", "total": len(wallets)}
 
 
 @router.get("/{address}")

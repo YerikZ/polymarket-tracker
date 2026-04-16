@@ -223,16 +223,17 @@ export function WalletTable() {
     },
   });
 
-  const [fetchAllResult, setFetchAllResult] = useState<{ fetched: number; total: number; errors: number } | null>(null);
+  const [fetchAllResult, setFetchAllResult] = useState<{ status: string; total: number } | null>(null);
   const fetchAllTrades = useMutation({
     mutationFn: async () => {
       setFetchAllResult(null);
       const r = await fetch("/api/wallets/fetch-all-trades", { method: "POST" });
       if (!r.ok) throw new Error(await r.text());
-      return r.json();
+      return r.json() as Promise<{ status: string; total: number }>;
     },
     onSuccess: (data) => {
       setFetchAllResult(data);
+      // Invalidate all wallet-detail queries so they refetch fresh data when opened
       qc.invalidateQueries({ queryKey: ["wallet-detail"] });
     },
   });
@@ -300,9 +301,9 @@ export function WalletTable() {
       <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-900">
         <div className="text-xs text-zinc-500">
           {fetchAllResult
-            ? `Fetched ${fetchAllResult.fetched}/${fetchAllResult.total} wallets${fetchAllResult.errors ? ` (${fetchAllResult.errors} errors)` : ""}`
+            ? `Background fetch started for ${fetchAllResult.total} wallets — check drawer to see updated data.`
             : fetchAllTrades.isPending
-            ? `Fetching trades for all wallets…`
+            ? "Starting background fetch…"
             : "Refresh leaderboard wallets and recompute scores."}
         </div>
         <div className="flex items-center gap-2">
@@ -312,10 +313,8 @@ export function WalletTable() {
             disabled={fetchAllTrades.isPending || refreshWallets.isPending}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-zinc-700 bg-zinc-900 text-zinc-200 text-xs font-semibold hover:border-zinc-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
-            <BarChart2
-              className={`w-3.5 h-3.5 ${fetchAllTrades.isPending ? "animate-pulse" : ""}`}
-            />
-            {fetchAllTrades.isPending ? "Fetching…" : "Fetch All Trades"}
+            <BarChart2 className="w-3.5 h-3.5" />
+            {fetchAllTrades.isPending ? "Starting…" : "Fetch All Trades"}
           </button>
           <button
             type="button"
