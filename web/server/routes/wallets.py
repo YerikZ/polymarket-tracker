@@ -126,8 +126,10 @@ def _fetch_and_compute(address: str, storage, cfg: dict, force: bool = False) ->
         unresolved = storage.get_unresolved_condition_ids(cids)
         if unresolved:
             try:
-                statuses = client.market_statuses(unresolved)
-                storage.upsert_market_outcomes(statuses)
+                all_statuses: dict = {}
+                for batch, _, _ in client.market_statuses(unresolved):
+                    all_statuses.update(batch)
+                storage.upsert_market_outcomes(all_statuses)
             except Exception as exc:
                 import logging
                 logging.getLogger(__name__).warning("market_statuses fetch failed: %s", exc)
