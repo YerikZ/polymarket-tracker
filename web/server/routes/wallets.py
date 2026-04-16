@@ -118,7 +118,10 @@ def _fetch_and_compute(address: str, storage, cfg: dict, force: bool = False) ->
     if needs_fetch:
         client = _build_client(cfg)
         raw_trades = client.activity_paginated(address, days=90)
-        inserted = storage.upsert_wallet_trades(address, raw_trades)
+        # Look up username from wallets table
+        wallets = storage.get_wallets()
+        username = next((w["username"] for w in wallets if w["address"] == address), "")
+        inserted = storage.upsert_wallet_trades(address, raw_trades, username=username)
 
         # Resolve market outcomes for all traded condition_ids
         cids = list({t.get("conditionId") or t.get("condition_id") or "" for t in raw_trades})

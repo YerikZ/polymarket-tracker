@@ -502,7 +502,7 @@ class Storage:
             ts = ts // 1000
         return datetime.fromtimestamp(ts, tz=timezone.utc)
 
-    def upsert_wallet_trades(self, address: str, trades: list[dict]) -> int:
+    def upsert_wallet_trades(self, address: str, trades: list[dict], username: str = "") -> int:
         """Insert new trades for a wallet; skip duplicates by (address, tx_hash).
         Returns number of rows actually inserted."""
         if not trades:
@@ -516,6 +516,7 @@ class Storage:
                 continue
             rows.append((
                 address,
+                username,
                 t.get("conditionId") or t.get("condition_id") or "",
                 t.get("tokenId") or t.get("token_id") or "",
                 t.get("title") or "",
@@ -535,7 +536,7 @@ class Storage:
                     cur,
                     """
                     INSERT INTO wallet_trades
-                        (address, condition_id, token_id, title, outcome, side,
+                        (address, username, condition_id, token_id, title, outcome, side,
                          size, usdc_size, price, traded_at, transaction_hash)
                     VALUES %s
                     ON CONFLICT (address, transaction_hash)

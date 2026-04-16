@@ -154,6 +154,8 @@ CREATE TABLE IF NOT EXISTS wallet_trades (
     transaction_hash TEXT             NOT NULL DEFAULT '',
     fetched_at       TIMESTAMPTZ      NOT NULL DEFAULT now()
 );
+ALTER TABLE wallet_trades ADD COLUMN IF NOT EXISTS username TEXT NOT NULL DEFAULT '';
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_trades_tx
     ON wallet_trades (address, transaction_hash) WHERE transaction_hash <> '';
 CREATE INDEX IF NOT EXISTS idx_wallet_trades_addr_at
