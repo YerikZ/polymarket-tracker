@@ -223,6 +223,20 @@ export function WalletTable() {
     },
   });
 
+  const [fetchAllResult, setFetchAllResult] = useState<{ fetched: number; total: number; errors: number } | null>(null);
+  const fetchAllTrades = useMutation({
+    mutationFn: async () => {
+      setFetchAllResult(null);
+      const r = await fetch("/api/wallets/fetch-all-trades", { method: "POST" });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: (data) => {
+      setFetchAllResult(data);
+      qc.invalidateQueries({ queryKey: ["wallet-detail"] });
+    },
+  });
+
   // Sort helpers
   function handleSortColumn(field: SortField) {
     if (sortField === field) {
@@ -285,19 +299,36 @@ export function WalletTable() {
       {/* ── Toolbar ── */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-900">
         <div className="text-xs text-zinc-500">
-          Refresh leaderboard wallets and recompute scores.
+          {fetchAllResult
+            ? `Fetched ${fetchAllResult.fetched}/${fetchAllResult.total} wallets${fetchAllResult.errors ? ` (${fetchAllResult.errors} errors)` : ""}`
+            : fetchAllTrades.isPending
+            ? `Fetching trades for all wallets…`
+            : "Refresh leaderboard wallets and recompute scores."}
         </div>
-        <button
-          type="button"
-          onClick={() => refreshWallets.mutate()}
-          disabled={refreshWallets.isPending}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-zinc-700 bg-zinc-900 text-zinc-200 text-xs font-semibold hover:border-zinc-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          <RefreshCw
-            className={`w-3.5 h-3.5 ${refreshWallets.isPending ? "animate-spin" : ""}`}
-          />
-          {refreshWallets.isPending ? "Refreshing…" : "Refresh Wallets"}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => fetchAllTrades.mutate()}
+            disabled={fetchAllTrades.isPending || refreshWallets.isPending}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-zinc-700 bg-zinc-900 text-zinc-200 text-xs font-semibold hover:border-zinc-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            <BarChart2
+              className={`w-3.5 h-3.5 ${fetchAllTrades.isPending ? "animate-pulse" : ""}`}
+            />
+            {fetchAllTrades.isPending ? "Fetching…" : "Fetch All Trades"}
+          </button>
+          <button
+            type="button"
+            onClick={() => refreshWallets.mutate()}
+            disabled={refreshWallets.isPending || fetchAllTrades.isPending}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-zinc-700 bg-zinc-900 text-zinc-200 text-xs font-semibold hover:border-zinc-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            <RefreshCw
+              className={`w-3.5 h-3.5 ${refreshWallets.isPending ? "animate-spin" : ""}`}
+            />
+            {refreshWallets.isPending ? "Refreshing…" : "Refresh Wallets"}
+          </button>
+        </div>
       </div>
 
       {/* ── Filter bar ── */}

@@ -54,6 +54,33 @@ async def refresh_wallets(request: Request):
     return await asyncio.to_thread(_refresh)
 
 
+@router.post("/fetch-all-trades")
+async def fetch_all_wallet_trades(request: Request):
+    """Fetch and refresh trade history for every known wallet sequentially."""
+    storage = request.app.state.storage
+    seed_cfg = request.app.state.seed_cfg
+    cfg = await asyncio.to_thread(settings_helpers.get_settings, storage, seed_cfg)
+
+    def _run():
+        wallets = storage.get_wallets()
+        total = len(wallets)
+        fetched = 0
+        errors = 0
+        for w in wallets:
+            try:
+                _fetch_and_compute(w["address"], storage, cfg, force=True)
+                fetched += 1
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "fetch-all-trades failed for %s: %s", w["address"][:10], exc
+                )
+                errors += 1
+        return {"status": "ok", "total": total, "fetched": fetched, "errors": errors}
+
+    return await asyncio.to_thread(_run)
+
+
 @router.get("/{address}")
 async def get_wallet(address: str, request: Request):
     storage = request.app.state.storage
