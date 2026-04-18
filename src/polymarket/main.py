@@ -350,6 +350,20 @@ def _build_copy_trader(
         )
         return None  # caller should bail if copy was requested but can't build trader
 
+    # Pre-flight: at least one of manual wallets or basket IDs must be configured.
+    # Without targets, every leaderboard wallet would be copied (unsafe default).
+    manual_wallets = [w for w in ct_cfg.get("manual_target_wallets", []) if str(w).strip()]
+    basket_ids     = [b for b in ct_cfg.get("basket_ids", []) if b]
+    if not manual_wallets and not basket_ids:
+        console.print(
+            "[red bold]Error:[/red bold] Copy trading requires at least one target.\n"
+            "  [bold]Option 1[/bold] — set [bold]copy_trading.manual_target_wallets[/bold] "
+            "to one or more wallet addresses.\n"
+            "  [bold]Option 2[/bold] — create a basket (with wallet addresses) and set "
+            "[bold]copy_trading.basket_ids[/bold] to its ID."
+        )
+        return None
+
     return CopyTrader(
         config=CopierConfig(
             private_key=private_key,

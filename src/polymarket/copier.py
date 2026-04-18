@@ -50,6 +50,14 @@ logger = logging.getLogger(__name__)
 _POLY_MIN_ORDER_USDC = 1.0
 
 
+class CopyConfigError(RuntimeError):
+    """Raised when copy trading is enabled but no target wallets can be resolved.
+
+    Indicates misconfiguration: either manual_target_wallets and basket_ids are
+    both empty, or basket_ids are set but the baskets contain no wallet addresses.
+    """
+
+
 def _normalize_wallet_ref(value: str) -> str:
     return value.strip().lower()
 
@@ -126,6 +134,7 @@ class CopyTrader:
         self._buy_lock = threading.Lock()
         self._pending_buys: set[str] = set()  # market keys currently being processed
         self._target_wallets: set[str] = set()
+        self._config_error: str | None = None  # set by update_scores() on CopyConfigError
         self._manual_refs = {
             _normalize_wallet_ref(value)
             for value in config.manual_target_wallets
@@ -135,37 +144,50 @@ class CopyTrader:
     def update_scores(self, scores: dict[str, WalletScore]) -> None:
         """Called by cmd_watch after computing/refreshing wallet scores."""
         self._scores = scores
-        self._target_wallets = self._select_target_wallets(scores)
+        try:
+            self._target_wallets = self._select_target_wallets(scores)
+            self._config_error = None  # cleared once a valid target set is resolved
+        except CopyConfigError as exc:
+            logger.error(
+                "Copy trading misconfigured — no orders will be placed until fixed: %s", exc
+            )
+            self._target_wallets = set()
+            self._config_error = str(exc)
         logger.info("Score cache updated for %d wallets.", len(scores))
 
     def _select_target_wallets(self, scores: dict[str, WalletScore]) -> set[str]:
-        """Select target wallets — manual list, or basket wallets as fallback.
+        """Resolve the effective copy target set — exactly one of three branches applies.
 
-        Priority order:
-        1. Manual targets (manual_target_wallets) — matched against current scored wallets
-        2. Basket wallets — all addresses from active configured baskets
-        3. Empty set → copy trading inactive (target gate bypassed would copy everything)
+        Branch 1 — manual_target_wallets is non-empty:
+            Copy only from those wallets (filtered against current scored set).
+            Returns set() transiently if none have been scored yet (will resolve next cycle).
+
+        Branch 2 — manual list is empty AND basket_ids resolves to ≥1 address:
+            Copy only from basket-member wallets (consensus gate will also apply in copy()).
+
+        Branch 3 — both are empty/unresolvable:
+            Raise CopyConfigError — misconfiguration must be fixed; no orders are placed.
         """
-        refs = self._manual_refs
-        if refs:
+        # Branch 1 — manual wallet list
+        if self._manual_refs:
             matched = [
                 ws for ws in scores.values()
-                if any(ref in {_normalize_wallet_ref(ws.address)} for ref in refs)
+                if _normalize_wallet_ref(ws.address) in self._manual_refs
             ]
             if not matched:
-                logger.warning("Manual refs configured but none matched scored wallets.")
-                return set()
-
+                logger.warning(
+                    "Manual target wallets configured but none have been scored yet — "
+                    "will retry next scoring cycle."
+                )
+                return set()  # transient: gate stays active, all signals skipped until matched
             logger.info(
-                "Selected %d manual target wallet(s): %s",
+                "Branch 1 — manual targets: %d wallet(s) selected: %s",
                 len(matched),
                 ", ".join(ws.address for ws in matched),
             )
             return {ws.address for ws in matched}
 
-        # No manual targets — fall back to basket wallet addresses when baskets are
-        # configured. This keeps the target gate active so only basket-member wallets
-        # can trigger copies (which then still require consensus to pass the basket gate).
+        # Branch 2 — basket wallets (manual list is empty)
         if self._cfg.basket_ids:
             basket_addrs: set[str] = set()
             for basket_id in self._cfg.basket_ids:
@@ -179,19 +201,22 @@ class CopyTrader:
                     )
             if basket_addrs:
                 logger.info(
-                    "No manual targets — using %d basket wallet(s) as effective copy targets.",
+                    "Branch 2 — basket targets: using %d wallet(s) from basket(s) %s.",
                     len(basket_addrs),
+                    self._cfg.basket_ids,
                 )
                 return basket_addrs
-            logger.warning(
-                "Basket IDs %s configured but no active basket wallets found — "
-                "copy trading inactive.",
-                self._cfg.basket_ids,
+            raise CopyConfigError(
+                f"Basket IDs {self._cfg.basket_ids} are configured but resolve to zero active "
+                "wallet addresses. Add wallets to the basket or disable copy trading."
             )
-            return set()
 
-        logger.info("No manual target wallets or baskets configured — copy trading inactive.")
-        return set()
+        # Branch 3 — nothing configured → hard error
+        raise CopyConfigError(
+            "Copy trading is enabled but no target wallets are configured. "
+            "Set copy_trading.manual_target_wallets to specific wallet addresses, "
+            "OR create a basket with wallet addresses and set copy_trading.basket_ids."
+        )
 
     def _check_basket_consensus(self, signal) -> dict | None:
         """
@@ -249,15 +274,21 @@ class CopyTrader:
                 reason="No token_id in signal — cannot place order without ERC-1155 asset ID",
             )
 
-        # Target mode: only act on signals from the chosen target set.
-        # The gate fires when ANY of: manual refs, basket IDs, or already-populated targets.
-        # This prevents a race on startup (before the first score update populates
-        # _target_wallets) from letting every leaderboard wallet through.
+        # Target gate — always active when copy trading has any configuration.
+        # The condition is intentionally broad so a startup race (before the first
+        # score cycle) never lets every leaderboard wallet through.
         if self._target_wallets or self._manual_refs or self._cfg.basket_ids:
+            # Misconfiguration detected during last update_scores() call.
+            if self._config_error:
+                return CopyResult(
+                    signal=signal, status="skipped",
+                    reason=f"Config error: {self._config_error}",
+                )
+            # Transient: manual refs present but no wallets scored yet (first cycle).
             if not self._target_wallets:
                 return CopyResult(
                     signal=signal, status="skipped",
-                    reason="Target selection: no scored wallets selected yet",
+                    reason="Target selection: no wallets matched yet — retry after scoring cycle",
                 )
             if signal.wallet_address not in self._target_wallets:
                 return CopyResult(
