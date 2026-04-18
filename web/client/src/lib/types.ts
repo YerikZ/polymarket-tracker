@@ -199,6 +199,7 @@ export interface Settings {
     daily_limit_usdc?: number;
     min_order_size_cap?: number;
     slippage?: number;
+    max_price?: number;
     min_score?: number;
     score_scale_size?: boolean;
     manual_target_wallets?: string[];

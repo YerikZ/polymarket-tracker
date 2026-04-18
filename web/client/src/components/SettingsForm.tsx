@@ -366,6 +366,9 @@ export function SettingsForm() {
         <Field label="Slippage" hint="Added to price for better fill">
           <NumInput value={ct.slippage} onChange={(v) => setCt("slippage", v)} step={0.005} />
         </Field>
+        <Field label="Max price" hint="Skip BUY if price ≥ this value (0 = disabled). Default 0.85 skips markets already at ≥85¢.">
+          <NumInput value={ct.max_price} onChange={(v) => setCt("max_price", v)} step={0.01} />
+        </Field>
         <Field label="Min score (0–100)" hint="Targets still need to pass this score gate">
           <NumInput value={ct.min_score} onChange={(v) => setCt("min_score", v)} />
         </Field>

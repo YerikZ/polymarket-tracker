@@ -89,6 +89,9 @@ class CopierConfig:
     blocked_keywords: list = field(default_factory=list)
     # Any market whose title contains one of these words (case-insensitive) is skipped.
     # Example: ["bitcoin", "ethereum", "crypto", "btc", "eth", "solana"]
+    max_price: float = 0.85
+    # Skip BUY signals where the market price exceeds this value (0 = disabled).
+    # E.g. 0.85 skips markets already trading at ≥85¢ — limited upside, high risk.
 
     # Scoring
     min_score: float = 50.0             # skip wallets with score below this (0 = disable)
@@ -238,6 +241,13 @@ class CopyTrader:
                     signal=signal, status="skipped",
                     reason=f"Basket consensus not reached: {consensus['reason']}",
                 )
+
+        # Skip high-price markets — limited upside, user-configurable ceiling
+        if self._cfg.max_price > 0 and signal.price >= self._cfg.max_price:
+            return CopyResult(
+                signal=signal, status="skipped",
+                reason=f"Price {signal.price:.4f} ≥ max_price {self._cfg.max_price:.2f}. Skipping.",
+            )
 
         # Skip resolved markets — price is 0 (lost) or 1 (won), nothing left to trade
         if signal.price <= 0.01 or signal.price >= 0.97:
