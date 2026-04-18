@@ -8,6 +8,8 @@ import {
   ArrowUp,
   ArrowDown,
   BarChart2,
+  Copy,
+  Check,
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Settings, Wallet } from "../lib/types";
@@ -160,6 +162,36 @@ function PillButton({
     >
       {children}
     </button>
+  );
+}
+
+function AddressCell({ address }: { address: string }) {
+  const [copied, setCopied] = useState(false);
+
+  function handleCopy(e: React.MouseEvent) {
+    e.stopPropagation();
+    navigator.clipboard.writeText(address).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="font-mono text-zinc-500 text-[11px]">
+        {address.slice(0, 6)}…{address.slice(-4)}
+      </span>
+      <button
+        type="button"
+        onClick={handleCopy}
+        title="Copy address"
+        className="p-0.5 rounded text-zinc-600 hover:text-zinc-300 transition-colors"
+      >
+        {copied
+          ? <Check className="w-3 h-3 text-emerald-400" />
+          : <Copy className="w-3 h-3" />}
+      </button>
+    </div>
   );
 }
 
@@ -432,6 +464,7 @@ export function WalletTable() {
               <SortIcon active={sortField === "rank"} dir={sortDir} />
             </th>
             <th className="px-4 py-2 font-medium">Username</th>
+            <th className="px-4 py-2 font-medium">Address</th>
             <th
               className={`px-4 py-2 font-medium ${thBtn}`}
               onClick={() => handleSortColumn("tier")}
@@ -461,7 +494,7 @@ export function WalletTable() {
           {displayedWallets.length === 0 && (
             <tr>
               <td
-                colSpan={8}
+                colSpan={9}
                 className="text-center text-zinc-600 py-16"
               >
                 {wallets.length === 0
@@ -488,6 +521,9 @@ export function WalletTable() {
                 <td className="px-4 py-2 text-zinc-400">#{w.rank}</td>
                 <td className="px-4 py-2 text-zinc-200">
                   {w.username || w.address.slice(0, 10) + "…"}
+                </td>
+                <td className="px-4 py-2">
+                  <AddressCell address={w.address} />
                 </td>
                 <td className="px-4 py-2">
                   <TierBadge tier={w.tier} />
@@ -555,7 +591,7 @@ export function WalletTable() {
               </tr>
               {expanded === w.address && w.score_detail && (
                 <tr className="border-b border-zinc-900 bg-zinc-900/30">
-                  <td colSpan={8}>
+                  <td colSpan={9}>
                     <ScoreBreakdown detail={w.score_detail} />
                   </td>
                 </tr>
