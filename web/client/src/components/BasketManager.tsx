@@ -1,7 +1,7 @@
 import { useState, useRef, KeyboardEvent } from "react";
-import { Plus, Trash2, Edit2, X, CheckCircle, XCircle, Loader2 } from "lucide-react";
+import { Plus, Trash2, Edit2, X, CheckCircle, XCircle, Loader2, Zap } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Basket, BasketConsensus } from "../lib/types";
+import type { Basket, BasketConsensus, Settings } from "../lib/types";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -304,6 +304,31 @@ export function BasketManager() {
     staleTime: 30_000,
   });
 
+  // Current basket_ids from settings
+  const { data: settings } = useQuery<Settings>({
+    queryKey: ["settings"],
+    queryFn: () => fetch("/api/settings").then((r) => r.json()),
+    staleTime: 30_000,
+  });
+  const activeBasketIds: number[] = settings?.copy_trading?.basket_ids ?? [];
+
+  const toggleCopyMutation = useMutation({
+    mutationFn: async (basketId: number) => {
+      const current = activeBasketIds;
+      const next = current.includes(basketId)
+        ? current.filter((id) => id !== basketId)
+        : [...current, basketId];
+      const r = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ copy_trading: { ...(settings?.copy_trading ?? {}), basket_ids: next } }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: (data) => qc.setQueryData(["settings"], data),
+  });
+
   const createMutation = useMutation({
     mutationFn: async (data: BasketFormData) => {
       const r = await fetch("/api/baskets", {
@@ -388,10 +413,12 @@ export function BasketManager() {
 
       {/* Basket list */}
       <div className="space-y-3">
-        {baskets.map((basket) => (
+        {baskets.map((basket) => {
+          const isCopyActive = activeBasketIds.includes(basket.id);
+          return (
           <div
             key={basket.id}
-            className="rounded border border-zinc-800 bg-zinc-900/50 p-4 space-y-2"
+            className={`rounded border p-4 space-y-2 ${isCopyActive ? "border-emerald-700/50 bg-emerald-950/20" : "border-zinc-800 bg-zinc-900/50"}`}
           >
             {/* Row header */}
             <div className="flex items-center justify-between">
@@ -404,8 +431,28 @@ export function BasketManager() {
                     {basket.category}
                   </span>
                 )}
+                {isCopyActive && (
+                  <span className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded border border-emerald-600/40 bg-emerald-500/10 text-emerald-400 font-semibold shrink-0">
+                    <Zap className="w-2.5 h-2.5" />
+                    Active
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                {/* Copy trading toggle */}
+                <button
+                  type="button"
+                  title={isCopyActive ? "Disable for copy trading" : "Enable for copy trading"}
+                  onClick={() => toggleCopyMutation.mutate(basket.id)}
+                  disabled={toggleCopyMutation.isPending}
+                  className={`px-2 py-1 text-[10px] rounded border font-semibold transition-colors ${
+                    isCopyActive
+                      ? "border-emerald-600/40 bg-emerald-500/10 text-emerald-400 hover:bg-red-500/10 hover:text-red-400 hover:border-red-600/40"
+                      : "border-zinc-700 text-zinc-500 hover:text-emerald-400 hover:border-emerald-600/40"
+                  }`}
+                >
+                  {isCopyActive ? "Disable" : "Enable copy"}
+                </button>
                 <button
                   type="button"
                   onClick={() =>
@@ -464,7 +511,8 @@ export function BasketManager() {
               />
             )}
           </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Create/Edit modal */}
