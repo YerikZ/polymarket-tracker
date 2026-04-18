@@ -188,6 +188,23 @@ async def _run_watcher(
         has_creds = bool(ct_cfg.get("private_key") and ct_cfg.get("funder"))
         copy_trader: CopyTrader | None = None
         if has_creds:
+            # Fail fast: copy trading needs at least one target source.
+            # Mirrors the pre-flight check in CLI's _build_copy_trader().
+            manual_wallets = [w for w in ct_cfg.get("manual_target_wallets", []) if str(w).strip()]
+            basket_ids     = [b for b in ct_cfg.get("basket_ids", []) if b]
+            if not manual_wallets and not basket_ids:
+                err = (
+                    "Copy trading is enabled but no targets are configured. "
+                    "Add wallets to copy_trading.manual_target_wallets, "
+                    "or create a basket with wallet addresses and set copy_trading.basket_ids."
+                )
+                async with state._lock:
+                    state.status = "error"
+                    state.error = err
+                    state.task = None
+                logger.error(err)
+                return
+
             copy_trader = CopyTrader(
                 config=build_copier_config(cfg),
                 storage=storage,
