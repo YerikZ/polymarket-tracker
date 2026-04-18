@@ -180,6 +180,19 @@ UPDATE market_outcomes
    SET resolved = TRUE
  WHERE winner_outcome <> ''
    AND resolved = FALSE;
+
+-- ── Baskets (consensus copy groups) ─────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS baskets (
+    id                   SERIAL           PRIMARY KEY,
+    name                 TEXT             NOT NULL,
+    category             TEXT             NOT NULL DEFAULT '',
+    wallet_addresses     TEXT[]           NOT NULL DEFAULT '{}',
+    consensus_threshold  DOUBLE PRECISION NOT NULL DEFAULT 0.8,
+    active               BOOLEAN          NOT NULL DEFAULT TRUE,
+    created_at           TIMESTAMPTZ      NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_baskets_active ON baskets (active) WHERE active = TRUE;
 """
 
 

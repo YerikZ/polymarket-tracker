@@ -97,6 +97,12 @@ class CopierConfig:
     # Target selection — manual list only; no auto-copy fallback
     manual_target_wallets: list[str] = field(default_factory=list)
 
+    # Basket / consensus copy
+    # List of basket IDs (from the baskets table) to gate copy signals through.
+    # If a signal's wallet is in one of these baskets, the copy only executes
+    # when ≥ consensus_threshold of basket wallets agree on the same outcome.
+    basket_ids: list[int] = field(default_factory=list)
+
     # Repeated-order top-up
     enable_topup: bool = False
     max_topups: int = 2
@@ -151,6 +157,45 @@ class CopyTrader:
         )
         return {ws.address for ws in matched}
 
+    def _check_basket_consensus(self, signal) -> dict | None:
+        """
+        Check whether any configured basket that contains signal.wallet_address
+        has reached consensus on this market+outcome.
+
+        Returns None if the wallet is not in any configured basket (fail-open).
+        Returns the consensus result dict if the wallet IS in a basket.
+        Exceptions are caught and logged; returns None on error (fail-open).
+        """
+        from .basket import check_consensus as _consensus
+
+        for basket_id in self._cfg.basket_ids:
+            try:
+                basket = self._storage.get_basket(basket_id)
+                if not basket or not basket.get("active"):
+                    continue
+                addresses = basket.get("wallet_addresses") or []
+                if signal.wallet_address not in addresses:
+                    continue  # this wallet is not in this basket — skip
+
+                recent_buys = self._storage.get_recent_buys_for_condition(
+                    addresses, signal.condition_id, within_hours=48,
+                )
+                result = _consensus(basket, signal.condition_id, signal.outcome, recent_buys)
+                logger.info(
+                    "Basket '%s' consensus for market %s: %s",
+                    basket.get("name"), signal.condition_id[:16], result["reason"],
+                )
+                return result
+
+            except Exception as exc:
+                logger.warning(
+                    "Basket consensus check failed for basket %d: %s", basket_id, exc
+                )
+                # Fail open — a DB error should not silently block a valid copy signal
+                return None
+
+        return None  # wallet not in any configured basket
+
     def is_daily_limit_reached(self) -> bool:
         """Return True if today's spend has hit or exceeded the daily cap."""
         spent = self._storage.get_daily_spend(date.today().isoformat())
@@ -183,6 +228,16 @@ class CopyTrader:
 
         if signal.side == "SELL":
             return self._copy_sell(signal)
+
+        # Basket gate: if any configured basket contains this wallet, only copy
+        # when ≥ basket.consensus_threshold of wallets agree on the same outcome.
+        if self._cfg.basket_ids:
+            consensus = self._check_basket_consensus(signal)
+            if consensus is not None and not consensus["should_copy"]:
+                return CopyResult(
+                    signal=signal, status="skipped",
+                    reason=f"Basket consensus not reached: {consensus['reason']}",
+                )
 
         # Skip resolved markets — price is 0 (lost) or 1 (won), nothing left to trade
         if signal.price <= 0.01 or signal.price >= 0.97:

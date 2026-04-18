@@ -8,7 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 logger = logging.getLogger(__name__)
 
-from polymarket.analyzer import WalletAnalyzer, compute_all_horizons
+from polymarket.analyzer import WalletAnalyzer, compute_all_horizons, compute_qualification_check
 from polymarket.client import PolymarketClient
 from polymarket.scanner import LeaderboardScanner
 from polymarket.scorer import WalletScorer
@@ -118,7 +118,7 @@ def _fetch_and_compute(address: str, storage, cfg: dict, force: bool = False) ->
     inserted = 0
     if needs_fetch:
         client = _build_client(cfg)
-        raw_trades = client.activity_paginated(address, days=90)
+        raw_trades = client.activity_paginated(address, days=120)
         # Look up username from wallets table
         wallets = storage.get_wallets()
         username = next((w["username"] for w in wallets if w["address"] == address), "")
@@ -138,8 +138,9 @@ def _fetch_and_compute(address: str, storage, cfg: dict, force: bool = False) ->
                 import logging
                 logging.getLogger(__name__).warning("market_statuses fetch failed: %s", exc)
 
-    trades = storage.get_wallet_trades(address, since_days=90)
+    trades = storage.get_wallet_trades(address, since_days=120)
     horizons = compute_all_horizons(trades)
+    qualification = compute_qualification_check(trades)
     last_fetched = storage.get_trade_last_fetched_at(address)
 
     return {
@@ -148,6 +149,7 @@ def _fetch_and_compute(address: str, storage, cfg: dict, force: bool = False) ->
         "horizons": horizons,
         "raw_trade_count": len(trades),
         "inserted": inserted,
+        "qualification": qualification,
     }
 
 

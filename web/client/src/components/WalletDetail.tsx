@@ -1,6 +1,6 @@
 import { X, RefreshCw, AlertCircle } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { HorizonMetrics, Wallet, WalletTradeDetail } from "../lib/types";
+import type { HorizonMetrics, QualificationCheck, QualificationPasses, Wallet, WalletTradeDetail } from "../lib/types";
 import { TierBadge } from "./TierBadge";
 import { ScoreBreakdown } from "./ScoreBreakdown";
 
@@ -33,7 +33,7 @@ function fmtTs(iso: string | null): string {
 
 // ── Horizon grid ──────────────────────────────────────────────────────────────
 
-const WINDOWS = ["7", "14", "30", "60", "90"] as const;
+const WINDOWS = ["7", "14", "30", "60", "90", "120"] as const;
 
 interface MetricRow {
   key: keyof HorizonMetrics;
@@ -59,6 +59,114 @@ const METRIC_ROWS: MetricRow[] = [
   { key: "resolved_count",     label: "Resolved trades",      fmt: fmtNum },
   { key: "avg_entry_price",    label: "Avg entry price",      fmt: fmtPrice },
 ];
+
+// ── Qualification scorecard ───────────────────────────────────────────────────
+
+interface CriterionDef {
+  key: keyof QualificationPasses;
+  label: string;
+  metricFn: (m: QualificationCheck["metrics"]) => string;
+}
+
+const CRITERIA: CriterionDef[] = [
+  {
+    key: "win_rate",
+    label: "Win rate ≥60%",
+    metricFn: (m) =>
+      m.win_rate_90d != null
+        ? `${(m.win_rate_90d * 100).toFixed(1)}% (${m.resolved_count_90d} resolved)`
+        : `${m.resolved_count_90d} resolved trades`,
+  },
+  {
+    key: "track_record",
+    label: "4+ month history",
+    metricFn: (m) =>
+      m.earliest_trade_days != null
+        ? `${Math.floor(m.earliest_trade_days)}d of data`
+        : "No data",
+  },
+  {
+    key: "niche_focus",
+    label: "2–3 topic areas",
+    metricFn: (m) =>
+      m.categories_detected.length > 0
+        ? `${m.niche_category_count}: ${m.categories_detected.join(", ")}`
+        : "No categories found",
+  },
+  {
+    key: "frequency",
+    label: "<100 trades/month",
+    metricFn: (m) =>
+      m.trades_per_month != null ? `${m.trades_per_month.toFixed(0)}/mo` : "—",
+  },
+  {
+    key: "accumulation",
+    label: "Position building",
+    metricFn: (m) =>
+      m.avg_entries_per_market != null
+        ? `${m.avg_entries_per_market.toFixed(2)}× per market`
+        : "—",
+  },
+  {
+    key: "no_decline",
+    label: "No recent decline",
+    metricFn: (m) => {
+      if (m.win_rate_30d == null || m.win_rate_90d == null) return "Insufficient data";
+      const delta = (m.win_rate_30d - m.win_rate_90d) * 100;
+      return `30d ${(m.win_rate_30d * 100).toFixed(1)}% vs 90d ${(m.win_rate_90d * 100).toFixed(1)}% (${delta >= 0 ? "+" : ""}${delta.toFixed(1)}pp)`;
+    },
+  },
+];
+
+function QualificationScorecard({ q }: { q: QualificationCheck }) {
+  const statusConfig = {
+    qualified:         { label: "Qualified",         cls: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" },
+    not_qualified:     { label: "Not Qualified",     cls: "bg-red-500/15 text-red-400 border-red-500/30" },
+    insufficient_data: { label: "Insufficient Data", cls: "bg-zinc-700/30 text-zinc-400 border-zinc-600" },
+  }[q.status];
+
+  return (
+    <div className="rounded border border-zinc-800 bg-zinc-900/50 p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">
+          Qualification Check
+        </span>
+        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${statusConfig.cls}`}>
+          {statusConfig.label}
+        </span>
+      </div>
+      <div className="grid grid-cols-3 gap-1.5">
+        {CRITERIA.map(({ key, label, metricFn }) => {
+          const pass = q.passes[key];
+          const isNull = pass === null || pass === undefined;
+          const cardCls = isNull
+            ? "border-zinc-800 bg-zinc-800/20"
+            : pass
+            ? "border-emerald-800/50 bg-emerald-900/20"
+            : "border-red-800/50 bg-red-900/20";
+          const iconCls = isNull
+            ? "text-zinc-600"
+            : pass
+            ? "text-emerald-400"
+            : "text-red-400";
+          return (
+            <div key={key} className={`rounded p-2 border text-[10px] ${cardCls}`}>
+              <div className="flex items-center gap-1 mb-0.5">
+                <span className={`font-bold ${iconCls}`}>
+                  {isNull ? "·" : pass ? "✓" : "✗"}
+                </span>
+                <span className="font-medium text-zinc-300 truncate">{label}</span>
+              </div>
+              <div className="text-zinc-500 truncate leading-tight">{metricFn(q.metrics)}</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Horizon grid ──────────────────────────────────────────────────────────────
 
 function HorizonMetricsGrid({ horizons }: { horizons: WalletTradeDetail["horizons"] }) {
   return (
@@ -215,9 +323,12 @@ export function WalletDetail({ wallet, onClose }: Props) {
             )}
             {detail && detail.raw_trade_count > 0 && (
               <>
+                {detail.qualification && (
+                  <QualificationScorecard q={detail.qualification} />
+                )}
                 <HorizonMetricsGrid horizons={detail.horizons} />
                 <p className="text-[11px] text-zinc-600 mt-2">
-                  Based on {detail.raw_trade_count} trades in the last 90 days.
+                  Based on {detail.raw_trade_count} trades in the last 120 days.
                   Win rate only counts resolved markets.
                 </p>
               </>

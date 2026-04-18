@@ -115,11 +115,60 @@ export interface HorizonMetrics {
   avg_entry_price: number | null;
 }
 
+export interface QualificationPasses {
+  win_rate:     boolean | null;
+  track_record: boolean | null;
+  niche_focus:  boolean | null;
+  frequency:    boolean | null;
+  accumulation: boolean | null;
+  no_decline:   boolean | null;
+}
+
+export interface QualificationMetrics {
+  win_rate_90d:           number | null;
+  resolved_count_90d:     number;
+  earliest_trade_days:    number | null;
+  categories_detected:    string[];
+  niche_category_count:   number;
+  trades_per_month:       number | null;
+  avg_entries_per_market: number | null;
+  win_rate_30d:           number | null;
+}
+
+export interface QualificationCheck {
+  status:  "qualified" | "not_qualified" | "insufficient_data";
+  passes:  QualificationPasses;
+  metrics: QualificationMetrics;
+}
+
 export interface WalletTradeDetail {
   address: string;
   last_fetched_at: string | null;
-  horizons: Record<"7" | "14" | "30" | "60" | "90", HorizonMetrics>;
+  horizons: Record<"7" | "14" | "30" | "60" | "90" | "120", HorizonMetrics>;
   raw_trade_count: number;
+  qualification: QualificationCheck;
+}
+
+export interface Basket {
+  id: number;
+  name: string;
+  category: string;
+  wallet_addresses: string[];
+  consensus_threshold: number;
+  active: boolean;
+  created_at: string;
+}
+
+export interface BasketConsensus {
+  basket_id:    number;
+  basket_name:  string;
+  wallet_count: number;
+  agree_count:  number;
+  agree_pct:    number;
+  price_spread: number;
+  threshold:    number;
+  should_copy:  boolean;
+  reason:       string;
 }
 
 export interface Settings {
@@ -153,6 +202,7 @@ export interface Settings {
     min_score?: number;
     score_scale_size?: boolean;
     manual_target_wallets?: string[];
+    basket_ids?: number[];
     enable_topup?: boolean;
     max_topups?: number;
     topup_size_multiplier?: number;

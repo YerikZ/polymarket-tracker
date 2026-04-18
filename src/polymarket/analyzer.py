@@ -1,4 +1,5 @@
 import logging
+from collections import Counter
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
@@ -108,9 +109,40 @@ class WalletAnalyzer:
         return sum(p.initial_value for p in positions) / len(positions)
 
 
+# ── Shared helpers ────────────────────────────────────────────────────────────
+
+def _dt(t: dict) -> datetime:
+    """Parse traded_at from a trade dict to a UTC-aware datetime."""
+    v = t.get("traded_at")
+    if isinstance(v, datetime):
+        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+    if isinstance(v, str):
+        try:
+            return datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except Exception:
+            return datetime.min.replace(tzinfo=timezone.utc)
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _is_winner(t: dict) -> bool:
+    """Return True when a resolved buy trade ended up winning."""
+    wt = (t.get("winner_token_id") or "").strip()
+    wo = (t.get("winner_outcome") or "").strip().lower()
+    tt = (t.get("token_id") or "").strip()
+    to_ = (t.get("outcome") or "").strip().lower()
+    return bool((wt and wt == tt) or (wo and wo == to_))
+
+
+def _is_resolved(t: dict) -> bool:
+    """Return True when a trade has resolution data (resolved flag or winner set)."""
+    return bool(t.get("resolved") or t.get("winner_outcome") or t.get("winner_token_id"))
+
+
 # ── Multi-horizon analytics ───────────────────────────────────────────────────
 
-HORIZONS = [7, 14, 30, 60, 90]
+HORIZONS = [7, 14, 30, 60, 90, 120]
+
+_MIN_CATEGORY_TRADES = 5  # minimum buys to count a category as "active"
 
 
 def _empty_metrics() -> dict[str, Any]:
@@ -137,18 +169,6 @@ def compute_horizon_metrics(trades: list[dict], days: int) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=days)
 
-    # traded_at may be a datetime or an ISO string (from _row_to_dict)
-    def _dt(t: dict) -> datetime:
-        v = t.get("traded_at")
-        if isinstance(v, datetime):
-            return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
-        if isinstance(v, str):
-            try:
-                return datetime.fromisoformat(v.replace("Z", "+00:00"))
-            except Exception:
-                return datetime.min.replace(tzinfo=timezone.utc)
-        return datetime.min.replace(tzinfo=timezone.utc)
-
     window = [t for t in trades if _dt(t) >= cutoff]
     if not window:
         return _empty_metrics()
@@ -159,21 +179,8 @@ def compute_horizon_metrics(trades: list[dict], days: int) -> dict[str, Any]:
     unique_cids = {t.get("condition_id") for t in buys if t.get("condition_id")}
     all_dates = {_dt(t).date() for t in window}
 
-    # Win rate — markets that are resolved OR have a clear winner recorded.
-    # winner_outcome/winner_token_id may be set even when resolved=False due to
-    # a previous storage bug (resolved flag was not derived from winner presence).
-    resolved_buys = [
-        t for t in buys
-        if t.get("resolved") or t.get("winner_outcome") or t.get("winner_token_id")
-    ]
-    wins = 0
-    for t in resolved_buys:
-        wt = (t.get("winner_token_id") or "").strip()
-        wo = (t.get("winner_outcome") or "").strip().lower()
-        tt = (t.get("token_id") or "").strip()
-        to_ = (t.get("outcome") or "").strip().lower()
-        if (wt and wt == tt) or (wo and wo == to_):
-            wins += 1
+    resolved_buys = [t for t in buys if _is_resolved(t)]
+    wins = sum(1 for t in resolved_buys if _is_winner(t))
     win_rate = (wins / len(resolved_buys)) if resolved_buys else None
 
     sorted_sizes = sorted(usdc_sizes)
@@ -199,3 +206,123 @@ def compute_horizon_metrics(trades: list[dict], days: int) -> dict[str, Any]:
 def compute_all_horizons(trades: list[dict]) -> dict[str, dict]:
     """Return metrics for each horizon in HORIZONS."""
     return {str(d): compute_horizon_metrics(trades, d) for d in HORIZONS}
+
+
+# ── Qualification scorecard ───────────────────────────────────────────────────
+
+def _win_rate_for_window(buys: list[dict]) -> tuple[float | None, int]:
+    """Return (win_rate, resolved_count) for a list of BUY trades."""
+    resolved = [t for t in buys if _is_resolved(t)]
+    if not resolved:
+        return None, 0
+    wins = sum(1 for t in resolved if _is_winner(t))
+    return wins / len(resolved), len(resolved)
+
+
+def compute_qualification_check(trades: list[dict]) -> dict[str, Any]:
+    """Evaluate a wallet against 6 qualification criteria using its full trade history.
+
+    Returns:
+        status:  "qualified" | "not_qualified" | "insufficient_data"
+        passes:  dict[criterion → bool | None]   (None = insufficient data)
+        metrics: dict of raw values behind each criterion
+    """
+    # Import here to avoid a module-level circular import risk (scorer → analyzer cycle check)
+    try:
+        from .scorer import CATEGORY_KEYWORDS
+    except ImportError:
+        CATEGORY_KEYWORDS = {}
+
+    now = datetime.now(timezone.utc)
+    cutoff_30d  = now - timedelta(days=30)
+    cutoff_90d  = now - timedelta(days=90)
+
+    passes: dict[str, bool | None] = {
+        "win_rate":    None,
+        "track_record": None,
+        "niche_focus": None,
+        "frequency":   None,
+        "accumulation": None,
+        "no_decline":  None,
+    }
+
+    # ── Slice windows ────────────────────────────────────────────────────────
+    all_buys = [t for t in trades if (t.get("side") or "").upper() == "BUY"]
+    buys_90d  = [t for t in all_buys if _dt(t) >= cutoff_90d]
+    buys_30d  = [t for t in all_buys if _dt(t) >= cutoff_30d]
+
+    # ── Criterion 1: Win rate ≥60% across ≥50 resolved trades (90d) ─────────
+    win_rate_90d, resolved_count_90d = _win_rate_for_window(buys_90d)
+    if resolved_count_90d < 50:
+        passes["win_rate"] = None   # insufficient sample
+    else:
+        passes["win_rate"] = (win_rate_90d or 0) >= 0.60
+
+    # ── Criterion 2: Track record — oldest trade ≥120 days ago ──────────────
+    if not trades:
+        earliest_trade_days: float | None = None
+        passes["track_record"] = None
+    else:
+        oldest_dt = min(_dt(t) for t in trades)
+        earliest_trade_days = (now - oldest_dt).total_seconds() / 86400
+        passes["track_record"] = earliest_trade_days >= 120
+
+    # ── Criterion 3: Niche focus — 2–3 active categories ────────────────────
+    category_counts: dict[str, int] = {}
+    for t in all_buys:
+        title = (t.get("title") or "").lower()
+        for cat, keywords in CATEGORY_KEYWORDS.items():
+            if any(kw in title for kw in keywords):
+                category_counts[cat] = category_counts.get(cat, 0) + 1
+                break  # first match wins — no double-counting
+
+    active_cats = [cat for cat, cnt in category_counts.items() if cnt >= _MIN_CATEGORY_TRADES]
+    niche_count = len(active_cats)
+    passes["niche_focus"] = None if niche_count == 0 else (1 <= niche_count <= 3)
+
+    # ── Criterion 4: Frequency — <100 buys in rolling 30d window ────────────
+    passes["frequency"] = len(buys_30d) < 100
+
+    # ── Criterion 5: Position accumulation — avg >1 entry per market (90d) ──
+    if buys_90d:
+        entries_per_mkt = Counter(
+            t["condition_id"] for t in buys_90d if t.get("condition_id")
+        )
+        avg_entries: float | None = (
+            sum(entries_per_mkt.values()) / len(entries_per_mkt)
+            if entries_per_mkt else None
+        )
+    else:
+        avg_entries = None
+    passes["accumulation"] = None if avg_entries is None else avg_entries > 1.0
+
+    # ── Criterion 6: No decline — 30d win rate not trailing 90d by >10pp ────
+    win_rate_30d, resolved_count_30d = _win_rate_for_window(buys_30d)
+    if win_rate_30d is None or win_rate_90d is None or resolved_count_30d < 5:
+        passes["no_decline"] = None
+    else:
+        passes["no_decline"] = (win_rate_90d - win_rate_30d) <= 0.10
+
+    # ── Overall status ───────────────────────────────────────────────────────
+    non_null = [v for v in passes.values() if v is not None]
+    if len(non_null) < 4:
+        status = "insufficient_data"
+    elif all(non_null):
+        status = "qualified"
+    else:
+        status = "not_qualified"
+
+    return {
+        "status": status,
+        "passes": passes,
+        "metrics": {
+            "win_rate_90d":           win_rate_90d,
+            "resolved_count_90d":     resolved_count_90d,
+            "earliest_trade_days":    round(earliest_trade_days, 1) if earliest_trade_days is not None else None,
+            "categories_detected":    active_cats,
+            "niche_category_count":   niche_count,
+            "trades_per_month":       float(len(buys_30d)),
+            "avg_entries_per_market": round(avg_entries, 2) if avg_entries is not None else None,
+            "win_rate_30d":           win_rate_30d,
+        },
+    }

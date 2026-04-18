@@ -632,3 +632,111 @@ class Storage:
                 )
                 already_resolved = {row[0] for row in cur.fetchall()}
         return [c for c in cids if c and c not in already_resolved]
+
+    # ── Baskets ───────────────────────────────────────────────────────────────
+
+    def get_baskets(self, active_only: bool = True) -> list[dict]:
+        """Return all baskets, optionally filtered to active ones."""
+        with db.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                if active_only:
+                    cur.execute("SELECT * FROM baskets WHERE active = TRUE ORDER BY created_at DESC")
+                else:
+                    cur.execute("SELECT * FROM baskets ORDER BY created_at DESC")
+                return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def get_basket(self, basket_id: int) -> dict | None:
+        """Return one basket by id, or None if not found."""
+        with db.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT * FROM baskets WHERE id = %s", (basket_id,))
+                row = cur.fetchone()
+                return _row_to_dict(row) if row else None
+
+    def create_basket(
+        self,
+        name: str,
+        category: str = "",
+        wallet_addresses: list[str] | None = None,
+        consensus_threshold: float = 0.8,
+    ) -> dict:
+        """Insert a new basket and return the created row."""
+        addresses = wallet_addresses or []
+        with db.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    INSERT INTO baskets (name, category, wallet_addresses, consensus_threshold)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING *
+                    """,
+                    (name, category, addresses, consensus_threshold),
+                )
+                return _row_to_dict(cur.fetchone())
+
+    def update_basket(
+        self,
+        basket_id: int,
+        name: str | None = None,
+        category: str | None = None,
+        wallet_addresses: list[str] | None = None,
+        consensus_threshold: float | None = None,
+    ) -> dict | None:
+        """Update non-None fields on the basket. Returns updated row or None."""
+        fields = []
+        values: list = []
+        if name is not None:
+            fields.append("name = %s"); values.append(name)
+        if category is not None:
+            fields.append("category = %s"); values.append(category)
+        if wallet_addresses is not None:
+            fields.append("wallet_addresses = %s"); values.append(wallet_addresses)
+        if consensus_threshold is not None:
+            fields.append("consensus_threshold = %s"); values.append(consensus_threshold)
+        if not fields:
+            return self.get_basket(basket_id)
+        values.append(basket_id)
+        with db.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    f"UPDATE baskets SET {', '.join(fields)} WHERE id = %s RETURNING *",
+                    values,
+                )
+                row = cur.fetchone()
+                return _row_to_dict(row) if row else None
+
+    def delete_basket(self, basket_id: int) -> bool:
+        """Soft-delete by setting active=FALSE. Returns True if the row existed."""
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE baskets SET active = FALSE WHERE id = %s",
+                    (basket_id,),
+                )
+                return cur.rowcount > 0
+
+    def get_recent_buys_for_condition(
+        self,
+        addresses: list[str],
+        condition_id: str,
+        within_hours: int = 48,
+    ) -> list[dict]:
+        """Return BUY trades from `addresses` for `condition_id` within the last N hours.
+        Used by basket consensus checking."""
+        if not addresses or not condition_id:
+            return []
+        with db.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT address, outcome, token_id, price, usdc_size, traded_at
+                    FROM wallet_trades
+                    WHERE address = ANY(%s)
+                      AND condition_id = %s
+                      AND side = 'BUY'
+                      AND traded_at >= now() - (%s || ' hours')::interval
+                    ORDER BY traded_at DESC
+                    """,
+                    (addresses, condition_id, str(within_hours)),
+                )
+                return [_row_to_dict(r) for r in cur.fetchall()]
