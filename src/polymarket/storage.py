@@ -547,6 +547,50 @@ class Storage:
                 )
                 return cur.rowcount
 
+    def upsert_signal_as_trade(self, signal) -> int:
+        """Write a detected Signal into wallet_trades immediately for consensus freshness.
+
+        Uses the signal's detected_at ISO timestamp as traded_at.
+        Idempotent — ON CONFLICT DO NOTHING if the tx_hash already exists.
+        Returns 1 if inserted, 0 if already present.
+        """
+        from datetime import datetime, timezone as tz
+        try:
+            traded_at = datetime.fromisoformat(
+                signal.detected_at.replace("Z", "+00:00")
+            )
+        except Exception:
+            traded_at = datetime.now(tz.utc)
+
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO wallet_trades
+                        (address, username, condition_id, token_id, title, outcome, side,
+                         size, usdc_size, price, traded_at, transaction_hash)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (address, transaction_hash)
+                        WHERE transaction_hash <> ''
+                    DO NOTHING
+                    """,
+                    (
+                        signal.wallet_address,
+                        getattr(signal, "username", ""),
+                        signal.condition_id,
+                        signal.token_id or "",
+                        signal.market_title,
+                        signal.outcome,
+                        signal.side.upper(),
+                        float(signal.size),
+                        float(signal.usdc_size),
+                        float(signal.price),
+                        traded_at,
+                        signal.transaction_hash or "",
+                    ),
+                )
+                return cur.rowcount
+
     def get_wallet_trades(self, address: str, since_days: int = 90) -> list[dict]:
         """Return trades joined with market_outcomes for horizon metric computation."""
         with db.get_conn() as conn:

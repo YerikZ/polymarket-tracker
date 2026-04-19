@@ -124,6 +124,57 @@ async def stop_watcher(state: WatcherState) -> None:
         state._monitor = None
 
 
+async def _basket_trade_refresh_loop(
+    storage: "Storage",
+    client,
+    basket_ids: list[int],
+    interval: int,
+) -> None:
+    """Background coroutine: refresh wallet_trades for basket members every `interval` seconds.
+
+    Runs concurrently with the main monitor/stream loop inside _run_watcher.
+    Fetches the last 3 days of trades per wallet so the 48-hour consensus window
+    always has fresh data even between signal detections.
+    """
+    logger.info(
+        "Basket trade refresh loop started — %d basket(s), interval %ds.",
+        len(basket_ids), interval,
+    )
+    while True:
+        await asyncio.sleep(interval)
+
+        # Collect all active basket wallet addresses
+        basket_addrs: set[str] = set()
+        for basket_id in basket_ids:
+            try:
+                basket = await asyncio.to_thread(storage.get_basket, basket_id)
+                if basket and basket.get("active"):
+                    basket_addrs.update(basket.get("wallet_addresses") or [])
+            except Exception as exc:
+                logger.warning("Basket refresh: failed to load basket %d: %s", basket_id, exc)
+
+        if not basket_addrs:
+            logger.debug("Basket refresh: no active basket wallets found, skipping.")
+            continue
+
+        logger.debug("Basket refresh: polling trades for %d wallet(s).", len(basket_addrs))
+        for address in basket_addrs:
+            try:
+                # Fetch last 3 days — enough to cover the 48-hour consensus window
+                trades = await asyncio.to_thread(client.activity_paginated, address, 3)
+                n = await asyncio.to_thread(storage.upsert_wallet_trades, address, trades)
+                if n:
+                    logger.info(
+                        "Basket refresh: +%d new trade(s) for %s…", n, address[:10]
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Basket refresh: failed to fetch trades for %s…: %s", address[:10], exc
+                )
+
+
 async def _run_watcher(
     state: WatcherState,
     storage: "Storage",
@@ -149,6 +200,11 @@ async def _run_watcher(
         wallet_refresh_interval = int(cfg.get("wallet_refresh_interval", 600))
         wss_url = cfg.get("polygon_wss", "").strip()
         watcher_mode = cfg.get("watcher_mode", "poll")
+        ct_cfg_top = cfg.get("copy_trading", {})
+        basket_ids: list[int] = [b for b in ct_cfg_top.get("basket_ids", []) if b]
+        basket_trade_refresh_interval: int = int(
+            ct_cfg_top.get("basket_trade_refresh_interval", 300)
+        )
 
         # Fail fast: stream mode requires polygon_wss before any network calls
         if watcher_mode == "stream" and not wss_url:
@@ -258,6 +314,13 @@ async def _run_watcher(
         # inside a plain thread silently creates and discards the coroutine.
         def sync_on_signal(sig):
             state.last_signal_at = datetime.now(timezone.utc).isoformat()
+            # Write every detected BUY into wallet_trades immediately so the
+            # consensus query sees it without waiting for the next refresh cycle.
+            if sig.side == "BUY" and basket_ids:
+                try:
+                    storage.upsert_signal_as_trade(sig)
+                except Exception as exc:
+                    logger.debug("Failed to write signal to wallet_trades: %s", exc)
             if copy_trader:
                 try:
                     result = copy_trader.copy(sig)
@@ -275,6 +338,12 @@ async def _run_watcher(
         async def async_on_signal(sig):
             async with state._lock:
                 state.last_signal_at = datetime.now(timezone.utc).isoformat()
+            # Write every detected BUY into wallet_trades immediately (same as poll path).
+            if sig.side == "BUY" and basket_ids:
+                try:
+                    await asyncio.to_thread(storage.upsert_signal_as_trade, sig)
+                except Exception as exc:
+                    logger.debug("Failed to write signal to wallet_trades: %s", exc)
             if copy_trader:
                 try:
                     result = await asyncio.to_thread(copy_trader.copy, sig)
@@ -295,38 +364,57 @@ async def _run_watcher(
                         result.spend_usdc,
                     )
 
-        # Choose stream or poll (stream + wss_url already validated above)
-        if watcher_mode == "stream":
-            async with state._lock:
-                state.mode = "stream"
-                state.status = "running"
-
-            stream = PolymarketStream(
-                wss_url=wss_url,
-                client=client,
-                scanner=scanner,
-                storage=storage,
-                top_wallets=wallets,
-                min_position_usdc=min_position_usdc,
-                wallet_refresh_interval=wallet_refresh_interval,
+        # ── Basket trade refresh task ────────────────────────────────────────
+        # Runs concurrently with the main loop; cancelled when the watcher stops.
+        refresh_task: asyncio.Task | None = None
+        if basket_ids:
+            refresh_task = asyncio.create_task(
+                _basket_trade_refresh_loop(
+                    storage, client, basket_ids, basket_trade_refresh_interval
+                ),
+                name="basket-trade-refresh",
             )
-            await stream.run(async_on_signal)
-        else:
-            async with state._lock:
-                state.mode = "poll"
-                state.status = "running"
 
-            monitor = SignalMonitor(
-                client=client,
-                scanner=scanner,
-                storage=storage,
-                poll_interval=poll_interval,
-                min_position_usdc=min_position_usdc,
-                max_signal_age=max_signal_age,
-            )
-            async with state._lock:
-                state._monitor = monitor
-            await asyncio.to_thread(monitor.run, sync_on_signal)
+        # ── Choose stream or poll (stream + wss_url already validated above) ─
+        try:
+            if watcher_mode == "stream":
+                async with state._lock:
+                    state.mode = "stream"
+                    state.status = "running"
+
+                stream = PolymarketStream(
+                    wss_url=wss_url,
+                    client=client,
+                    scanner=scanner,
+                    storage=storage,
+                    top_wallets=wallets,
+                    min_position_usdc=min_position_usdc,
+                    wallet_refresh_interval=wallet_refresh_interval,
+                )
+                await stream.run(async_on_signal)
+            else:
+                async with state._lock:
+                    state.mode = "poll"
+                    state.status = "running"
+
+                monitor = SignalMonitor(
+                    client=client,
+                    scanner=scanner,
+                    storage=storage,
+                    poll_interval=poll_interval,
+                    min_position_usdc=min_position_usdc,
+                    max_signal_age=max_signal_age,
+                )
+                async with state._lock:
+                    state._monitor = monitor
+                await asyncio.to_thread(monitor.run, sync_on_signal)
+        finally:
+            if refresh_task and not refresh_task.done():
+                refresh_task.cancel()
+                try:
+                    await refresh_task
+                except asyncio.CancelledError:
+                    pass
 
     except asyncio.CancelledError:
         logger.info("Watcher task cancelled.")

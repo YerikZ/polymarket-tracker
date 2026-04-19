@@ -47,6 +47,7 @@ _DEFAULTS: dict = {
         "score_scale_size": True,
         "manual_target_wallets": [],
         "basket_ids": [],
+        "basket_trade_refresh_interval": 300,
         "enable_topup": False,
         "max_topups": 2,
         "topup_size_multiplier": 1.0,

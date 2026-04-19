@@ -204,6 +204,7 @@ export interface Settings {
     score_scale_size?: boolean;
     manual_target_wallets?: string[];
     basket_ids?: number[];
+    basket_trade_refresh_interval?: number;
     enable_topup?: boolean;
     max_topups?: number;
     topup_size_multiplier?: number;
