@@ -437,11 +437,20 @@ class CopyTrader:
                 ),
             )
 
-        # Bump spend up to meet the market minimum if needed, then cap at max_trade_usdc
+        # Skip if the market minimum cost exceeds our configured spend.
+        # Previously this bumped spend to the minimum, which caused fixed mode to always
+        # place max_trade_usdc orders. Now we skip so fixed_usdc is always respected.
         min_required = round(min_order_size * order_price, 2)
         if spend < min_required:
-            logger.debug("Spend $%.2f below min floor $%.2f — bumping up", spend, min_required)
-            spend = min_required
+            self._pending_buys.discard(market_key)
+            return CopyResult(
+                signal=signal, status="skipped",
+                reason=(
+                    f"Market minimum ${min_required:.2f} ({min_order_size:.0f} shares × ${order_price:.4f}) "
+                    f"exceeds configured spend ${spend:.2f}. "
+                    f"Raise fixed_usdc above ${min_required:.2f} to trade this market."
+                ),
+            )
 
         # Cap per trade
         spend = min(spend, self._cfg.max_trade_usdc)
