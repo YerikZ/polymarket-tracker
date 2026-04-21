@@ -64,9 +64,11 @@ def _normalize_wallet_ref(value: str) -> str:
 # Lazy import so the tool works without py-clob-client for users who only watch
 def _clob_imports():
     from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import OrderArgs, OrderType, BalanceAllowanceParams, AssetType
+    from py_clob_client.clob_types import (
+        MarketOrderArgs, OrderType, BalanceAllowanceParams, AssetType,
+    )
     from py_clob_client.order_builder.constants import BUY, SELL
-    return ClobClient, OrderArgs, OrderType, BUY, SELL, BalanceAllowanceParams, AssetType
+    return ClobClient, MarketOrderArgs, OrderType, BUY, SELL, BalanceAllowanceParams, AssetType
 
 
 @dataclass
@@ -452,13 +454,14 @@ class CopyTrader:
                 reason=f"Computed spend ${spend:.2f} is below API minimum of ${_POLY_MIN_ORDER_USDC:.2f} USDC",
             )
 
-        shares = round(spend / order_price, 2)
+        # Estimate shares for logging and DB records (actual fill may differ slightly at market).
+        est_shares = round(spend / order_price, 2)
 
         if self._cfg.dry_run or cap_hit:
             label = "SHADOW DRY-RUN (cap hit)" if cap_hit else "DRY RUN"
             logger.info(
-                "[%s] Would BUY %.2f shares of %s @ $%.4f (≈$%.2f USDC)",
-                label, shares, signal.market_title[:40], order_price, spend,
+                "[%s] Would BUY $%.2f USDC of %s @ worst-price $%.4f (≈%.2f shares)",
+                label, spend, signal.market_title[:40], order_price, est_shares,
             )
             self._storage.append_paper_position({
                 "condition_id": signal.condition_id,
@@ -466,7 +469,7 @@ class CopyTrader:
                 "market_title": signal.market_title,
                 "outcome": signal.outcome,
                 "entry_price": order_price,
-                "shares": shares,
+                "shares": est_shares,
                 "spend_usdc": spend,
                 "opened_at": signal.detected_at,
                 "wallet_address": signal.wallet_address,
@@ -481,13 +484,13 @@ class CopyTrader:
             status_label = "shadow" if cap_hit else "dry_run"
             return CopyResult(
                 signal=signal, status=status_label,
-                reason=f"{label}: would place BUY {shares:.2f} shares @ ${order_price:.4f} (≈${spend:.2f} USDC)",
+                reason=f"{label}: would BUY $%.2f USDC @ worst-price ${order_price:.4f} (≈{est_shares:.2f} shares)" % spend,
                 spend_usdc=spend,
                 price=order_price,
             )
 
-        # Live execution
-        return self._place_order(signal, shares, order_price, spend)
+        # Live execution — pass USDC spend directly; market order handles sizing
+        return self._place_order(signal, order_price, spend)
 
     def _topup_position(self, signal: Signal, existing: dict) -> CopyResult:
         """Add to an existing open position when an active target buys again."""
@@ -530,55 +533,60 @@ class CopyTrader:
             )
 
         order_price = round(min(signal.price + self._cfg.slippage, 0.99), 4)
-        shares = round(spend / order_price, 2)
+        est_shares = round(spend / order_price, 2)
 
         logger.info(
-            "Top-up #%d for %s: +$%.2f (x%.2f) at %.4f -> %.2f shares",
-            topup_count + 1, signal.market_title[:40], spend, multiplier, order_price, shares,
+            "Top-up #%d for %s: +$%.2f USDC (x%.2f) @ worst-price %.4f (≈%.2f shares)",
+            topup_count + 1, signal.market_title[:40], spend, multiplier, order_price, est_shares,
         )
 
         if self._cfg.dry_run:
-            self._storage.add_to_position(existing["id"], shares, spend)
+            self._storage.add_to_position(existing["id"], est_shares, spend)
             self._storage.record_daily_spend(date.today().isoformat(), spend)
             return CopyResult(
                 signal=signal,
                 status="dry_run",
                 spend_usdc=spend,
                 price=order_price,
-                reason=f"DRY RUN TOP-UP #{topup_count + 1}: +{shares:.2f} shares @ ${order_price:.4f}",
+                reason=f"DRY RUN TOP-UP #{topup_count + 1}: +${spend:.2f} USDC @ worst-price ${order_price:.4f} (≈{est_shares:.2f} shares)",
             )
 
-        return self._place_topup_order(signal, existing, shares, order_price, spend)
+        return self._place_topup_order(signal, existing, order_price, spend)
 
     def _place_topup_order(
         self,
         signal: Signal,
         existing: dict,
-        shares: float,
         price: float,
         spend: float,
     ) -> CopyResult:
-        """Place a live top-up buy order and update the DB position on success."""
+        """Place a live market top-up BUY order spending `spend` USDC (FOK)."""
         try:
-            _, OrderArgs, OrderType, BUY, _, _, _ = _clob_imports()
+            _, MarketOrderArgs, OrderType, BUY, _, _, _ = _clob_imports()
             client = self._get_client()
-            order_args = OrderArgs(token_id=signal.token_id, price=price, size=shares, side=BUY)
-            signed = client.create_order(order_args)
-            resp = client.post_order(signed, OrderType.GTC)
+            order_args = MarketOrderArgs(
+                token_id=signal.token_id,
+                amount=spend,   # USDC to spend
+                side=BUY,
+                price=price,    # worst-price limit
+            )
+            signed = client.create_market_order(order_args)
+            resp = client.post_order(signed, OrderType.FOK)
         except Exception as exc:
-            logger.error("Top-up order exception: %s", exc)
+            logger.error("Top-up market order exception: %s", exc)
             return CopyResult(signal=signal, status="failed", reason=f"Top-up order exception: {exc}")
 
         if resp.get("success") or resp.get("orderID"):
             topup_num = int(existing.get("topup_count", 0) or 0) + 1
-            self._storage.add_to_position(existing["id"], shares, spend)
+            est_shares = round(spend / price, 2)
+            self._storage.add_to_position(existing["id"], est_shares, spend)
             self._storage.record_daily_spend(date.today().isoformat(), spend)
             return CopyResult(
                 signal=signal,
                 status="placed",
                 spend_usdc=spend,
                 price=price,
-                reason=f"Top-up #{topup_num}: +{shares:.2f} shares @ ${price:.4f} (order {resp.get('orderID','')})",
+                reason=f"Top-up #{topup_num}: +$%.2f USDC @ worst-price ${price:.4f} (order {resp.get('orderID','')})" % spend,
                 order_id=resp.get("orderID", ""),
             )
 
@@ -598,13 +606,15 @@ class CopyTrader:
         pos_is_shadow  = pos_is_dry_run and not self._cfg.dry_run
 
         # For live positions, verify we actually hold the tokens on-chain.
-        # GTC buy orders are recorded immediately but may never be filled.
+        # FOK buy orders either fill completely or cancel; a zero balance means
+        # the original buy was rejected (price moved past our worst-price limit).
         if not pos_is_dry_run:
             on_chain = self._get_token_balance(signal.token_id)
             if on_chain == 0.0:
                 logger.warning(
                     "Sell skipped for %s: on-chain token balance is 0 "
-                    "(buy order was likely never filled). Cancelling DB position.",
+                    "(FOK buy was likely cancelled — price exceeded worst-price limit). "
+                    "Cancelling DB position.",
                     signal.market_title[:40],
                 )
                 self._storage.cancel_paper_position(pos["id"])
@@ -766,35 +776,43 @@ class CopyTrader:
         logger.warning("Unknown sizing_mode '%s', defaulting to fixed", mode)
         return self._cfg.fixed_usdc
 
-    def _place_order(self, signal: Signal, shares: float, price: float, spend: float) -> CopyResult:
+    def _place_order(self, signal: Signal, price: float, spend: float) -> CopyResult:
+        """Place a live market BUY order spending exactly `spend` USDC.
+
+        Uses MarketOrderArgs with FOK (Fill-Or-Kill): the order either fills
+        completely at or below `price` (worst-price slippage limit) or is
+        cancelled immediately. No partial fills, no resting on the order book.
+        """
         try:
-            ClobClient, OrderArgs, OrderType, BUY, _, _, _ = _clob_imports()
+            _, MarketOrderArgs, OrderType, BUY, _, _, _ = _clob_imports()
             client = self._get_client()
 
-            order_args = OrderArgs(
+            order_args = MarketOrderArgs(
                 token_id=signal.token_id,
-                price=price,
-                size=shares,
+                amount=spend,      # USDC to spend (BUY semantics)
                 side=BUY,
+                price=price,       # worst-price limit (slippage protection)
             )
-            signed = client.create_order(order_args)
-            resp = client.post_order(signed, OrderType.GTC)
+            signed = client.create_market_order(order_args)
+            resp = client.post_order(signed, OrderType.FOK)
 
             if resp.get("success") or resp.get("orderID"):
                 order_id = resp.get("orderID", "")
+                # Estimate shares from spend/price for the position record.
+                # takingAmount in the response may be empty for FOK orders.
+                est_shares = round(spend / price, 2)
                 logger.info(
-                    "Order placed: %s — BUY %.2f shares @ $%.4f (≈$%.2f USDC)",
-                    order_id, shares, price, spend,
+                    "Market BUY placed: %s — $%.2f USDC @ worst-price $%.4f (≈%.2f shares)",
+                    order_id, spend, price, est_shares,
                 )
                 self._storage.record_daily_spend(date.today().isoformat(), spend)
-                # Record live trade so polymarket pnl can track it alongside dry-run positions
                 self._storage.append_paper_position({
                     "condition_id":  signal.condition_id,
                     "token_id":      signal.token_id,
                     "market_title":  signal.market_title,
                     "outcome":       signal.outcome,
                     "entry_price":   price,
-                    "shares":        shares,
+                    "shares":        est_shares,
                     "spend_usdc":    spend,
                     "opened_at":     signal.detected_at,
                     "wallet_address": signal.wallet_address,
@@ -806,45 +824,47 @@ class CopyTrader:
                 self._pending_buys.discard(market_key)
                 return CopyResult(
                     signal=signal, status="placed",
-                    reason=f"BUY {shares:.2f} shares @ ${price:.4f} (≈${spend:.2f} USDC)",
+                    reason=f"Market BUY $%.2f USDC @ worst-price ${price:.4f} (≈{est_shares:.2f} shares)" % spend,
                     order_id=order_id,
                     spend_usdc=spend,
                     price=price,
                 )
             else:
                 err = resp.get("errorMsg") or str(resp)
-                logger.error("Order rejected: %s", err)
+                logger.error("Market BUY rejected: %s", err)
                 self._pending_buys.discard(signal.condition_id or signal.token_id)
                 return CopyResult(signal=signal, status="failed", reason=f"API rejected: {err}")
 
         except Exception as exc:
-            logger.error("Order placement exception: %s", exc)
+            logger.error("Market BUY exception: %s", exc)
             self._pending_buys.discard(signal.condition_id or signal.token_id)
             return CopyResult(signal=signal, status="failed", reason=str(exc))
 
     def _place_sell_order(self, signal: Signal, pos: dict, shares: float, price: float, proceeds: float, refund: float) -> CopyResult:
-        """Place a live SELL order on the CLOB.
+        """Place a live market SELL order on the CLOB (FOK).
 
+        For SELL, MarketOrderArgs.amount is shares (not USDC).
+        `price` is the worst-price floor — order is cancelled if market is below it.
         Closes the DB position and refunds daily_spend only on success.
         On failure the position is left open so it can be retried.
         """
         try:
-            ClobClient, OrderArgs, OrderType, _, SELL, _, _ = _clob_imports()
+            _, MarketOrderArgs, OrderType, _, SELL, _, _ = _clob_imports()
             client = self._get_client()
 
-            order_args = OrderArgs(
+            order_args = MarketOrderArgs(
                 token_id=signal.token_id,
-                price=price,
-                size=shares,
+                amount=shares,   # SELL semantics: amount = shares to sell
                 side=SELL,
+                price=price,     # worst-price floor (slippage protection)
             )
-            signed = client.create_order(order_args)
-            resp   = client.post_order(signed, OrderType.GTC)
+            signed = client.create_market_order(order_args)
+            resp   = client.post_order(signed, OrderType.FOK)
 
             if resp.get("success") or resp.get("orderID"):
                 order_id = resp.get("orderID", "")
                 logger.info(
-                    "Sell order placed: %s — SELL %.4f shares @ $%.4f (≈$%.2f USDC)",
+                    "Market SELL placed: %s — %.4f shares @ worst-price $%.4f (≈$%.2f USDC)",
                     order_id, shares, price, proceeds,
                 )
                 # Confirmed — close DB position and restore daily headroom
@@ -858,16 +878,16 @@ class CopyTrader:
                     )
                 return CopyResult(
                     signal=signal, status="placed",
-                    reason=f"SELL {shares:.4f} shares @ ${price:.4f} (≈${proceeds:.2f} USDC)",
+                    reason=f"Market SELL {shares:.4f} shares @ worst-price ${price:.4f} (≈${proceeds:.2f} USDC)",
                     order_id=order_id,
                     spend_usdc=-proceeds,
                     price=price,
                 )
             else:
                 err = resp.get("errorMsg") or str(resp)
-                logger.error("Sell order rejected: %s — position left open for retry", err)
+                logger.error("Market SELL rejected: %s — position left open for retry", err)
                 return CopyResult(signal=signal, status="failed", reason=f"API rejected: {err}")
 
         except Exception as exc:
-            logger.error("Sell order exception: %s — position left open for retry", exc)
+            logger.error("Market SELL exception: %s — position left open for retry", exc)
             return CopyResult(signal=signal, status="failed", reason=str(exc))
