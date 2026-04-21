@@ -89,7 +89,6 @@ class CopierConfig:
     # Safety limits
     max_trade_usdc: float = 500.0        # hard cap per trade
     daily_limit_usdc: float = 1000.0     # total cap for today
-    min_order_size_cap: float = 10.0     # skip if market's min_order_size exceeds this (avoids forced large buys)
 
     # Execution
     dry_run: bool = True                 # True = simulate only, never submit
@@ -414,43 +413,8 @@ class CopyTrader:
         order_price = round(signal.price + self._cfg.slippage, 4)
         order_price = min(order_price, 0.99)  # price can't exceed 0.99 on Polymarket
 
-        # Fetch the per-market minimum order size from the CLOB order book.
-        min_order_size = 1.0  # safe default if fetch fails
-        if not self._cfg.dry_run:
-            try:
-                book = self._get_client().get_order_book(signal.token_id)
-                if book.min_order_size:
-                    min_order_size = float(book.min_order_size)
-                    logger.debug("Market min_order_size: %.2f shares", min_order_size)
-            except Exception as exc:
-                logger.debug("Could not fetch order book min size: %s", exc)
-
-        # Skip if the market's minimum is above our cap (prevents forced large buys)
-        if min_order_size > self._cfg.min_order_size_cap:
-            self._pending_buys.discard(market_key)
-            return CopyResult(
-                signal=signal, status="skipped",
-                reason=(
-                    f"Market requires {min_order_size:.0f} shares minimum, "
-                    f"exceeds cap of {self._cfg.min_order_size_cap:.0f}. "
-                    f"Raise min_order_size_cap in config to allow."
-                ),
-            )
-
-        # Skip if the market minimum cost exceeds our configured spend.
-        # Previously this bumped spend to the minimum, which caused fixed mode to always
-        # place max_trade_usdc orders. Now we skip so fixed_usdc is always respected.
-        min_required = round(min_order_size * order_price, 2)
-        if spend < min_required:
-            self._pending_buys.discard(market_key)
-            return CopyResult(
-                signal=signal, status="skipped",
-                reason=(
-                    f"Market minimum ${min_required:.2f} ({min_order_size:.0f} shares × ${order_price:.4f}) "
-                    f"exceeds configured spend ${spend:.2f}. "
-                    f"Raise fixed_usdc above ${min_required:.2f} to trade this market."
-                ),
-            )
+        # Note: min_order_size (share-based) is a limit-order concept and does not apply
+        # to market orders where we pass a USDC amount directly. No share minimum check needed.
 
         # Cap per trade
         spend = min(spend, self._cfg.max_trade_usdc)

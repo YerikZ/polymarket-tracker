@@ -197,7 +197,6 @@ export interface Settings {
     mirror_pct?: number;
     max_trade_usdc?: number;
     daily_limit_usdc?: number;
-    min_order_size_cap?: number;
     slippage?: number;
     max_price?: number;
     min_score?: number;

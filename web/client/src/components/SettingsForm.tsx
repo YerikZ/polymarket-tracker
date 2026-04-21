@@ -379,9 +379,6 @@ export function SettingsForm() {
             placeholder="0xabc..., 0xdef..."
           />
         </Field>
-        <Field label="Min order size cap" hint="Skip if market minimum exceeds this">
-          <NumInput value={ct.min_order_size_cap} onChange={(v) => setCt("min_order_size_cap", v)} step={0.5} />
-        </Field>
         <Field label="Scale by wallet tier">
           <div className="flex items-center gap-2 pt-1">
             <Toggle
