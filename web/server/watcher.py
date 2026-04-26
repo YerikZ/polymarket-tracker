@@ -180,29 +180,49 @@ async def _position_monitor_loop(
     copy_trader,
     interval: int,
 ) -> None:
-    """Background coroutine: check open positions for TP/SL conditions every `interval` seconds.
+    """Background coroutine: check open positions for stop-loss / trailing-stop every `interval` s.
 
-    For each open position with a current_price already set:
-    - Stop-loss:   exit if current_price ≤ entry_price × (1 − stop_loss_pct)
-    - Take-profit: exit if current_price ≥ take_profit_price (absolute ceiling, 0 = disabled)
+    Two exit conditions (both optional, 0 = disabled):
 
-    Delegates to CopyTrader.close_position() which reuses the same sell execution path
-    (dry-run closes DB; live positions place a real SELL market order).
+    Stop-loss (from entry):
+        Exit when current_price ≤ entry_price × (1 − stop_loss_pct).
+        Protects against catastrophic downside from the start.
+        e.g. stop_loss_pct=0.40 → exit if price drops 40% below entry.
+
+    Trailing stop (from peak):
+        Exit when current_price ≤ peak_price × (1 − trailing_stop_pct),
+        but only AFTER price first reaches entry_price × trailing_stop_min_gain.
+        Protects locked-in gains without capping upside.
+        e.g. entry=1¢, trailing_stop_pct=0.30, trailing_stop_min_gain=2.0:
+          → arms when price ≥ 2¢
+          → peak reaches 38¢
+          → exits when price falls to 26.6¢ — a 2500%+ gain protected.
+
+    Peak prices are tracked in memory (dict keyed by position id), seeded from
+    current_price on first observation. Reset on watcher restart (acceptable —
+    the stop-loss still fires, and peak re-accumulates from the current level).
     """
     cfg = copy_trader._cfg
     stop_loss_pct = cfg.stop_loss_pct
-    take_profit_price = cfg.take_profit_price
+    trailing_stop_pct = cfg.trailing_stop_pct
+    trailing_stop_min_gain = cfg.trailing_stop_min_gain
 
-    if not stop_loss_pct and not take_profit_price:
-        logger.info("Position monitor: TP/SL both disabled — loop exiting.")
+    if not stop_loss_pct and not trailing_stop_pct:
+        logger.info("Position monitor: SL and trailing-stop both disabled — loop exiting.")
         return
 
     logger.info(
-        "Position monitor started — interval %ds, SL %.0f%%, TP price %.2f",
+        "Position monitor started — interval %ds | SL %.0f%% from entry | "
+        "trailing %.0f%% from peak (arms at %.1f× entry)",
         interval,
-        stop_loss_pct * 100 if stop_loss_pct else 0,
-        take_profit_price,
+        stop_loss_pct * 100,
+        trailing_stop_pct * 100,
+        trailing_stop_min_gain,
     )
+
+    # In-memory peak tracker: pos_id → highest current_price seen since monitor started.
+    # Seeded to current_price on first observation; updates each cycle.
+    peak_prices: dict[int, float] = {}
 
     while True:
         await asyncio.sleep(interval)
@@ -215,7 +235,12 @@ async def _position_monitor_loop(
             logger.warning("Position monitor: failed to fetch open positions: %s", exc)
             continue
 
+        # Prune closed positions that are no longer returned
+        open_ids = {pos["id"] for pos in positions}
+        peak_prices = {k: v for k, v in peak_prices.items() if k in open_ids}
+
         for pos in positions:
+            pos_id: int = pos["id"]
             current_price = pos.get("current_price")
             if current_price is None:
                 continue  # price hasn't been fetched yet for this position
@@ -224,32 +249,50 @@ async def _position_monitor_loop(
             entry_price = float(pos.get("entry_price") or 0)
             market_title = pos.get("market_title", "")[:40]
 
+            # Update in-memory peak (seed from current on first observation)
+            prev_peak = peak_prices.get(pos_id, current_price)
+            peak = max(prev_peak, current_price)
+            peak_prices[pos_id] = peak
+
             trigger_reason: str | None = None
 
-            # Stop-loss: price dropped ≥ stop_loss_pct below entry
+            # ── Stop-loss: current price dropped ≥ stop_loss_pct below entry ──
             if stop_loss_pct > 0 and entry_price > 0:
-                sl_threshold = round(entry_price * (1.0 - stop_loss_pct), 4)
+                sl_threshold = round(entry_price * (1.0 - stop_loss_pct), 6)
                 if current_price <= sl_threshold:
                     trigger_reason = (
-                        f"Stop-loss: price ${current_price:.4f} ≤ "
-                        f"threshold ${sl_threshold:.4f} "
+                        f"Stop-loss: ${current_price:.4f} ≤ ${sl_threshold:.4f} "
                         f"(entry ${entry_price:.4f} − {stop_loss_pct*100:.0f}%)"
                     )
 
-            # Take-profit: price reached absolute ceiling
-            if trigger_reason is None and take_profit_price > 0:
-                if current_price >= take_profit_price:
-                    trigger_reason = (
-                        f"Take-profit: price ${current_price:.4f} ≥ "
-                        f"ceiling ${take_profit_price:.4f}"
-                    )
+            # ── Trailing stop: current price retreated from peak ──────────────
+            # Only evaluated if stop-loss didn't already fire.
+            if trigger_reason is None and trailing_stop_pct > 0 and entry_price > 0:
+                arm_threshold = entry_price * trailing_stop_min_gain
+                if peak >= arm_threshold:
+                    ts_threshold = round(peak * (1.0 - trailing_stop_pct), 6)
+                    if current_price <= ts_threshold:
+                        gain_at_peak = (peak / entry_price - 1) * 100
+                        trigger_reason = (
+                            f"Trailing stop: ${current_price:.4f} ≤ ${ts_threshold:.4f} "
+                            f"(peak ${peak:.4f} [{gain_at_peak:+.0f}%] − {trailing_stop_pct*100:.0f}%)"
+                        )
+                else:
+                    # Log when close to arming so user can see it in logs
+                    pct_to_arm = (arm_threshold / current_price - 1) * 100 if current_price else 0
+                    if pct_to_arm < 20:  # only log when within 20% of arming
+                        logger.debug(
+                            "Position monitor [%s]: trailing stop not yet armed "
+                            "(peak $%.4f, need $%.4f = %.1f× entry, %.0f%% away)",
+                            market_title, peak, arm_threshold, trailing_stop_min_gain, pct_to_arm,
+                        )
 
             if trigger_reason is None:
                 continue
 
             logger.info(
                 "Position monitor: triggering close for pos %d [%s] — %s",
-                pos.get("id", 0), market_title, trigger_reason,
+                pos_id, market_title, trigger_reason,
             )
             try:
                 result = await asyncio.to_thread(
@@ -258,13 +301,15 @@ async def _position_monitor_loop(
                 if result:
                     logger.info(
                         "Position monitor: pos %d closed — %s",
-                        pos.get("id", 0), result.reason,
+                        pos_id, result.reason,
                     )
+                # Remove from peak tracker — position is now closed
+                peak_prices.pop(pos_id, None)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.error(
-                    "Position monitor: error closing pos %d: %s", pos.get("id", 0), exc
+                    "Position monitor: error closing pos %d: %s", pos_id, exc
                 )
 
 
@@ -475,7 +520,7 @@ async def _run_watcher(
         # Only spawned when copy trader is active and at least one TP/SL threshold is set.
         monitor_task: asyncio.Task | None = None
         if copy_trader and (
-            copy_trader._cfg.stop_loss_pct > 0 or copy_trader._cfg.take_profit_price > 0
+            copy_trader._cfg.stop_loss_pct > 0 or copy_trader._cfg.trailing_stop_pct > 0
         ):
             monitor_task = asyncio.create_task(
                 _position_monitor_loop(storage, copy_trader, position_check_interval),

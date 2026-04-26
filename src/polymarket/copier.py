@@ -121,10 +121,13 @@ class CopierConfig:
     topup_size_multiplier: float = 1.0
 
     # Take-profit / stop-loss (position monitor)
-    # stop_loss_pct:    0 = disabled; 0.40 = exit if price drops ≥ 40% below entry_price
-    # take_profit_price: 0 = disabled; 0.92 = exit when market price reaches 92¢ (absolute)
+    # stop_loss_pct:          0 = disabled; 0.40 = exit if price drops ≥ 40% below entry_price
+    # trailing_stop_pct:      0 = disabled; 0.30 = exit if price retreats 30% below its peak
+    # trailing_stop_min_gain: only arm trailing stop once price ≥ this multiple of entry_price
+    #                         2.0 = don't trail until price at least doubles (avoids noise near entry)
     stop_loss_pct: float = 0.0
-    take_profit_price: float = 0.0
+    trailing_stop_pct: float = 0.0
+    trailing_stop_min_gain: float = 2.0
 
 
 class CopyTrader:

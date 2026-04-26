@@ -52,7 +52,8 @@ _DEFAULTS: dict = {
         "topup_size_multiplier": 1.0,
         "blocked_keywords": [],
         "stop_loss_pct": 0.0,
-        "take_profit_price": 0.0,
+        "trailing_stop_pct": 0.0,
+        "trailing_stop_min_gain": 2.0,
         "position_check_interval": 60,
         "private_key": "",
         "funder": "",
@@ -193,7 +194,8 @@ def build_copier_config(cfg: dict) -> "CopierConfig":
         max_topups=int(ct.get("max_topups", 2)),
         topup_size_multiplier=float(ct.get("topup_size_multiplier", 1.0)),
         stop_loss_pct=float(ct.get("stop_loss_pct", 0.0)),
-        take_profit_price=float(ct.get("take_profit_price", 0.0)),
+        trailing_stop_pct=float(ct.get("trailing_stop_pct", 0.0)),
+        trailing_stop_min_gain=float(ct.get("trailing_stop_min_gain", 2.0)),
     )
 
 

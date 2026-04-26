@@ -209,7 +209,8 @@ export interface Settings {
     topup_size_multiplier?: number;
     blocked_keywords?: string[];
     stop_loss_pct?: number;
-    take_profit_price?: number;
+    trailing_stop_pct?: number;
+    trailing_stop_min_gain?: number;
     position_check_interval?: number;
   };
 }
