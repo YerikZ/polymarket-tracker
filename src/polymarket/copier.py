@@ -423,7 +423,16 @@ class CopyTrader:
         order_price = min(order_price, 0.99)  # price can't exceed 0.99 on Polymarket
 
         # Note: min_order_size (share-based) is a limit-order concept and does not apply
-        # to market orders where we pass a USDC amount directly. No share minimum check needed.
+        # to market orders where we pass a USDC amount directly (BUY side). No share minimum
+        # check needed at buy time — but log a warning if the estimated share count is very
+        # small relative to typical market minimums, since such positions may be dust at sell time.
+        est_shares_pre = round(spend / order_price, 2) if order_price else 0
+        if 0 < est_shares_pre < 2.0:
+            logger.warning(
+                "Small position warning: $%.2f USDC @ $%.4f ≈ %.2f estimated shares — "
+                "some markets enforce a 5+ share sell minimum; this position may be dust at close.",
+                spend, order_price, est_shares_pre,
+            )
 
         # Cap per trade
         spend = min(spend, self._cfg.max_trade_usdc)
@@ -612,8 +621,10 @@ class CopyTrader:
                 shares = on_chain
 
             # Fetch the actual market minimum from the CLOB order book.
-            # If shares are below it (e.g. partial GTC fill) we can't sell —
-            # leave the position open rather than erroring.
+            # For SELL market orders, amount = shares (unlike BUY where amount = USDC);
+            # the exchange enforces min_order_size shares and will reject anything below it.
+            # Note: FOK buys shouldn't partially fill, so if on-chain shares < market_min
+            # the position is permanently dust — cancel it rather than leaving it open forever.
             market_min = 1.0
             try:
                 book = self._get_client().get_order_book(signal.token_id)
@@ -623,13 +634,22 @@ class CopyTrader:
                 logger.debug("Could not fetch order book min size for sell: %s", exc)
 
             if shares < market_min:
+                # Position is dust — it will never be sellable on-chain (market enforces
+                # a share minimum; we hold fewer than that). Cancel the DB record so it
+                # doesn't stay open indefinitely after the tracked wallet has already sold.
+                # The cost is a loss (small — typically one fixed_usdc spend).
                 logger.warning(
-                    "Sell skipped for %s: %.4f shares below market minimum %.2f — position left open",
-                    signal.market_title[:40], shares, market_min,
+                    "Dust position: %.4f shares < market min %.2f for %s. "
+                    "Cannot sell on-chain — cancelling DB position (cost written off).",
+                    shares, market_min, signal.market_title[:40],
                 )
+                self._storage.cancel_paper_position(pos["id"])
                 return CopyResult(
                     signal=signal, status="skipped",
-                    reason=f"Position too small to sell: {shares:.4f} shares (market min: {market_min:.2f})",
+                    reason=(
+                        f"Dust: {shares:.4f} shares < market min {market_min:.2f} — "
+                        f"position cancelled (cost ${float(pos.get('spend_usdc', 0)):.2f} written off)"
+                    ),
                 )
 
         exit_price = round(max(signal.price - self._cfg.slippage, 0.01), 4)
