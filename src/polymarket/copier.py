@@ -634,21 +634,21 @@ class CopyTrader:
                 logger.debug("Could not fetch order book min size for sell: %s", exc)
 
             if shares < market_min:
-                # Position is dust — it will never be sellable on-chain (market enforces
-                # a share minimum; we hold fewer than that). Cancel the DB record so it
-                # doesn't stay open indefinitely after the tracked wallet has already sold.
-                # The cost is a loss (small — typically one fixed_usdc spend).
+                # Cannot exit early — the exchange requires ≥ market_min shares per SELL
+                # order and we hold fewer than that.  The tokens ARE on-chain though; if
+                # the market resolves YES Polymarket will redeem them automatically.
+                # Leave the DB position open so the normal resolution-tracking path
+                # (price update / market_closed) can close it correctly at expiry.
                 logger.warning(
-                    "Dust position: %.4f shares < market min %.2f for %s. "
-                    "Cannot sell on-chain — cancelling DB position (cost written off).",
-                    shares, market_min, signal.market_title[:40],
+                    "Early exit skipped for %s: %.4f on-chain shares < market min %.2f. "
+                    "Position left open — tokens held on-chain, will resolve at market close.",
+                    signal.market_title[:40], shares, market_min,
                 )
-                self._storage.cancel_paper_position(pos["id"])
                 return CopyResult(
                     signal=signal, status="skipped",
                     reason=(
-                        f"Dust: {shares:.4f} shares < market min {market_min:.2f} — "
-                        f"position cancelled (cost ${float(pos.get('spend_usdc', 0)):.2f} written off)"
+                        f"Below sell minimum: {shares:.4f} shares < {market_min:.2f} required. "
+                        f"Tokens held on-chain — position will close at market resolution."
                     ),
                 )
 
