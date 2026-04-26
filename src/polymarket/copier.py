@@ -150,6 +150,10 @@ class CopyTrader:
             for value in config.manual_target_wallets
             if value.strip()
         }
+        # Short-lived consensus cache: avoid N identical DB queries per poll cycle
+        # when multiple basket wallets buy the same market in the same window.
+        # Key: "condition_id:outcome", Value: (timestamp, result_dict | None)
+        self._consensus_cache: dict[str, tuple[float, dict | None]] = {}
 
     def update_scores(self, scores: dict[str, WalletScore]) -> None:
         """Called by cmd_watch after computing/refreshing wallet scores."""
@@ -236,7 +240,18 @@ class CopyTrader:
         Returns None if the wallet is not in any configured basket (fail-open).
         Returns the consensus result dict if the wallet IS in a basket.
         Exceptions are caught and logged; returns None on error (fail-open).
+
+        Results are cached per (condition_id, outcome) for 120 s so repeated
+        signals for the same market within a poll cycle don't each hit the DB.
         """
+        import time
+        cache_key = f"{signal.condition_id}:{signal.outcome}"
+        now = time.monotonic()
+        if cache_key in self._consensus_cache:
+            cached_ts, cached_result = self._consensus_cache[cache_key]
+            if now - cached_ts < 120:
+                return cached_result
+
         from .basket import check_consensus as _consensus
 
         for basket_id in self._cfg.basket_ids:
@@ -256,6 +271,7 @@ class CopyTrader:
                     "Basket '%s' consensus for market %s: %s",
                     basket.get("name"), signal.condition_id[:16], result["reason"],
                 )
+                self._consensus_cache[cache_key] = (now, result)
                 return result
 
             except Exception as exc:
@@ -265,7 +281,10 @@ class CopyTrader:
                 # Fail open — a DB error should not silently block a valid copy signal
                 return None
 
-        return None  # wallet not in any configured basket
+        # Wallet not in any configured basket — cache the None result too so
+        # subsequent signals for the same market skip the basket iteration.
+        self._consensus_cache[cache_key] = (now, None)
+        return None
 
     def is_daily_limit_reached(self) -> bool:
         """Return True if today's spend has hit or exceeded the daily cap."""
@@ -309,17 +328,9 @@ class CopyTrader:
         if signal.side == "SELL":
             return self._copy_sell(signal)
 
-        # Basket gate: require consensus before copying.
-        # When basket_ids are configured without manual targets, _select_target_wallets()
-        # already restricts signals to basket-member wallets, so this check will always
-        # find the wallet in its basket and return a real consensus result (not None).
-        if self._cfg.basket_ids:
-            consensus = self._check_basket_consensus(signal)
-            if consensus is not None and not consensus["should_copy"]:
-                return CopyResult(
-                    signal=signal, status="skipped",
-                    reason=f"Basket consensus not reached: {consensus['reason']}",
-                )
+        # ── Cheap pre-filters (no DB I/O) ────────────────────────────────────
+        # Run these before the consensus check so we never hit the DB for
+        # signals that would be rejected by price/keyword rules anyway.
 
         # Skip high-price markets — limited upside, user-configurable ceiling
         if self._cfg.max_price > 0 and signal.price >= self._cfg.max_price:
@@ -345,7 +356,9 @@ class CopyTrader:
                         reason=f"Market blocked by keyword '{kw}': {signal.market_title[:50]}",
                     )
 
-        # Dedup: skip if already invested in this market.
+        # ── Dedup: skip if already invested in this market ───────────────────
+        # Check before the consensus query: no point running consensus if we
+        # already own this market and top-ups are disabled.
         # Also check the in-memory pending set — concurrent stream signals for
         # the same market (multiple wallets buying simultaneously) can all pass
         # the DB check before any of them has written the position record.
@@ -368,6 +381,20 @@ class CopyTrader:
             # Reserve the market slot before releasing the lock
             if not existing:
                 self._pending_buys.add(market_key)
+
+        # ── Basket consensus gate ─────────────────────────────────────────────
+        # Placed after cheap filters and dedup so the DB query only runs when
+        # we actually intend to buy. Results are cached per (condition_id, outcome)
+        # for 120 s to avoid N identical queries per poll cycle when multiple
+        # basket wallets buy the same market in the same window.
+        if self._cfg.basket_ids:
+            consensus = self._check_basket_consensus(signal)
+            if consensus is not None and not consensus["should_copy"]:
+                self._pending_buys.discard(market_key)
+                return CopyResult(
+                    signal=signal, status="skipped",
+                    reason=f"Basket consensus not reached: {consensus['reason']}",
+                )
 
         if existing:
             return self._topup_position(signal, existing)
