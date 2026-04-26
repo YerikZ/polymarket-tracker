@@ -418,6 +418,21 @@ export function SettingsForm() {
             placeholder="bitcoin, ethereum…"
           />
         </Field>
+        <Field
+          label="Stop-loss % (0–1)"
+          hint="Exit if price drops this % below entry. 0.40 = sell when price falls 40% from entry. 0 = disabled."
+        >
+          <NumInput value={ct.stop_loss_pct} onChange={(v) => setCt("stop_loss_pct", v)} step={0.05} />
+        </Field>
+        <Field
+          label="Take-profit price (¢)"
+          hint="Exit when market price reaches this absolute value. 0.92 = sell at 92¢ regardless of entry. 0 = disabled."
+        >
+          <NumInput value={ct.take_profit_price} onChange={(v) => setCt("take_profit_price", v)} step={0.01} />
+        </Field>
+        <Field label="Position check interval (s)" hint="How often to check open positions for TP/SL conditions">
+          <NumInput value={ct.position_check_interval} onChange={(v) => setCt("position_check_interval", v)} step={10} />
+        </Field>
       </Section>
 
       {/* Credentials */}

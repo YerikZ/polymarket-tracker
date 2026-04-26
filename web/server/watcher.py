@@ -175,6 +175,99 @@ async def _basket_trade_refresh_loop(
                 )
 
 
+async def _position_monitor_loop(
+    storage: "Storage",
+    copy_trader,
+    interval: int,
+) -> None:
+    """Background coroutine: check open positions for TP/SL conditions every `interval` seconds.
+
+    For each open position with a current_price already set:
+    - Stop-loss:   exit if current_price ≤ entry_price × (1 − stop_loss_pct)
+    - Take-profit: exit if current_price ≥ take_profit_price (absolute ceiling, 0 = disabled)
+
+    Delegates to CopyTrader.close_position() which reuses the same sell execution path
+    (dry-run closes DB; live positions place a real SELL market order).
+    """
+    cfg = copy_trader._cfg
+    stop_loss_pct = cfg.stop_loss_pct
+    take_profit_price = cfg.take_profit_price
+
+    if not stop_loss_pct and not take_profit_price:
+        logger.info("Position monitor: TP/SL both disabled — loop exiting.")
+        return
+
+    logger.info(
+        "Position monitor started — interval %ds, SL %.0f%%, TP price %.2f",
+        interval,
+        stop_loss_pct * 100 if stop_loss_pct else 0,
+        take_profit_price,
+    )
+
+    while True:
+        await asyncio.sleep(interval)
+
+        try:
+            positions = await asyncio.to_thread(storage.get_open_positions)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Position monitor: failed to fetch open positions: %s", exc)
+            continue
+
+        for pos in positions:
+            current_price = pos.get("current_price")
+            if current_price is None:
+                continue  # price hasn't been fetched yet for this position
+
+            current_price = float(current_price)
+            entry_price = float(pos.get("entry_price") or 0)
+            market_title = pos.get("market_title", "")[:40]
+
+            trigger_reason: str | None = None
+
+            # Stop-loss: price dropped ≥ stop_loss_pct below entry
+            if stop_loss_pct > 0 and entry_price > 0:
+                sl_threshold = round(entry_price * (1.0 - stop_loss_pct), 4)
+                if current_price <= sl_threshold:
+                    trigger_reason = (
+                        f"Stop-loss: price ${current_price:.4f} ≤ "
+                        f"threshold ${sl_threshold:.4f} "
+                        f"(entry ${entry_price:.4f} − {stop_loss_pct*100:.0f}%)"
+                    )
+
+            # Take-profit: price reached absolute ceiling
+            if trigger_reason is None and take_profit_price > 0:
+                if current_price >= take_profit_price:
+                    trigger_reason = (
+                        f"Take-profit: price ${current_price:.4f} ≥ "
+                        f"ceiling ${take_profit_price:.4f}"
+                    )
+
+            if trigger_reason is None:
+                continue
+
+            logger.info(
+                "Position monitor: triggering close for pos %d [%s] — %s",
+                pos.get("id", 0), market_title, trigger_reason,
+            )
+            try:
+                result = await asyncio.to_thread(
+                    copy_trader.close_position, pos, trigger_reason
+                )
+                if result:
+                    logger.info(
+                        "Position monitor: pos %d closed — %s",
+                        pos.get("id", 0), result.reason,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    "Position monitor: error closing pos %d: %s", pos.get("id", 0), exc
+                )
+
+
 async def _run_watcher(
     state: WatcherState,
     storage: "Storage",
@@ -204,6 +297,9 @@ async def _run_watcher(
         basket_ids: list[int] = [b for b in ct_cfg_top.get("basket_ids", []) if b]
         basket_trade_refresh_interval: int = int(
             ct_cfg_top.get("basket_trade_refresh_interval", 300)
+        )
+        position_check_interval: int = int(
+            ct_cfg_top.get("position_check_interval", 60)
         )
 
         # Fail fast: stream mode requires polygon_wss before any network calls
@@ -375,6 +471,17 @@ async def _run_watcher(
                 name="basket-trade-refresh",
             )
 
+        # ── Position monitor task (TP / SL) ──────────────────────────────────
+        # Only spawned when copy trader is active and at least one TP/SL threshold is set.
+        monitor_task: asyncio.Task | None = None
+        if copy_trader and (
+            copy_trader._cfg.stop_loss_pct > 0 or copy_trader._cfg.take_profit_price > 0
+        ):
+            monitor_task = asyncio.create_task(
+                _position_monitor_loop(storage, copy_trader, position_check_interval),
+                name="position-monitor",
+            )
+
         # ── Choose stream or poll (stream + wss_url already validated above) ─
         try:
             if watcher_mode == "stream":
@@ -409,12 +516,13 @@ async def _run_watcher(
                     state._monitor = monitor
                 await asyncio.to_thread(monitor.run, sync_on_signal)
         finally:
-            if refresh_task and not refresh_task.done():
-                refresh_task.cancel()
-                try:
-                    await refresh_task
-                except asyncio.CancelledError:
-                    pass
+            for bg_task in (refresh_task, monitor_task):
+                if bg_task and not bg_task.done():
+                    bg_task.cancel()
+                    try:
+                        await bg_task
+                    except asyncio.CancelledError:
+                        pass
 
     except asyncio.CancelledError:
         logger.info("Watcher task cancelled.")

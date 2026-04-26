@@ -305,6 +305,15 @@ class Storage:
                 cur.execute("SELECT * FROM paper_positions ORDER BY id")
                 return [_row_to_dict(r) for r in cur.fetchall()]
 
+    def get_open_positions(self) -> list[dict]:
+        """Return all positions with position_status = 'open'."""
+        with db.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT * FROM paper_positions WHERE position_status = 'open' ORDER BY id"
+                )
+                return [_row_to_dict(r) for r in cur.fetchall()]
+
     def update_position_prices(self, updates: list[dict]) -> None:
         """Persist live prices for a batch of positions.
 

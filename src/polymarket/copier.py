@@ -120,6 +120,12 @@ class CopierConfig:
     max_topups: int = 2
     topup_size_multiplier: float = 1.0
 
+    # Take-profit / stop-loss (position monitor)
+    # stop_loss_pct:    0 = disabled; 0.40 = exit if price drops ≥ 40% below entry_price
+    # take_profit_price: 0 = disabled; 0.92 = exit when market price reaches 92¢ (absolute)
+    stop_loss_pct: float = 0.0
+    take_profit_price: float = 0.0
+
 
 class CopyTrader:
     def __init__(self, config: CopierConfig, storage: Storage):
@@ -662,6 +668,59 @@ class CopyTrader:
 
         # Live sell: place the order FIRST — close DB and refund only on success.
         return self._place_sell_order(signal, pos, shares, exit_price, proceeds, refund)
+
+    def close_position(self, pos: dict, reason: str) -> CopyResult | None:
+        """Close an open position due to a take-profit or stop-loss trigger.
+
+        Builds a synthetic SELL signal from the position record and delegates
+        to the same execution path as a normal tracked-wallet sell:
+        - Dry-run / shadow positions → DB closed immediately, no real order.
+        - Live positions → market SELL order placed (FOK).
+
+        Returns None if the position cannot be closed (missing price / shares).
+        """
+        from datetime import datetime, timezone as tz
+        token_id = pos.get("token_id", "")
+        condition_id = pos.get("condition_id", "")
+        shares = float(pos.get("shares") or 0)
+        current_price = pos.get("current_price")
+
+        if not shares or not current_price or not token_id:
+            logger.warning(
+                "close_position: cannot close pos %s — missing shares/price/token_id",
+                pos.get("id"),
+            )
+            return None
+
+        # Build a synthetic SELL signal so we can reuse _copy_sell() unchanged.
+        from .models import Signal
+        synthetic = Signal(
+            wallet_address=pos.get("wallet_address", ""),
+            username=pos.get("username", ""),
+            wallet_rank=int(pos.get("wallet_rank") or 0),
+            condition_id=condition_id,
+            market_title=pos.get("market_title", ""),
+            outcome=pos.get("outcome", ""),
+            side="SELL",
+            size=shares,
+            usdc_size=round(shares * float(current_price), 2),
+            price=float(current_price),
+            detected_at=datetime.now(tz.utc).isoformat(),
+            transaction_hash="",
+            token_id=token_id,
+        )
+
+        logger.info(
+            "[TP/SL] Closing position %d (%s) @ $%.4f — %s",
+            pos.get("id", 0),
+            pos.get("market_title", "")[:40],
+            float(current_price),
+            reason,
+        )
+        result = self._copy_sell(synthetic)
+        # Augment reason so the UI/logs clearly show this was automated
+        result.reason = f"[TP/SL] {reason} | {result.reason}"
+        return result
 
     def get_balance(self) -> float:
         """Return USDC balance (public helper for CLI)."""
