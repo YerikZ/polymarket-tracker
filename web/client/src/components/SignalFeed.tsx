@@ -5,6 +5,7 @@ import { TierBadge } from "./TierBadge";
 import { fmtPrice, fmtUsd, timeAgo } from "../lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import type { Alert, CopierStatus, Wallet } from "../lib/types";
+import { apiUrl } from "../lib/api";
 
 type SideFilter = "ALL" | "BUY" | "SELL";
 
@@ -80,7 +81,7 @@ export function SignalFeed() {
 
   const { data: wallets = [] } = useQuery<Wallet[]>({
     queryKey: ["wallets"],
-    queryFn: () => fetch("/api/wallets").then((r) => r.json()),
+    queryFn: () => fetch(apiUrl("//api/wallets")).then((r) => r.json()),
     refetchInterval: 60_000,
   });
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Alert } from "../lib/types";
+import { wsUrl } from "../lib/api";
 
 const MAX_FEED = 200;
 
@@ -8,8 +9,7 @@ export function useSignals() {
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
-    const proto = window.location.protocol === "https:" ? "wss" : "ws";
-    const url = `${proto}://${window.location.host}/ws/signals`;
+    const url = wsUrl("/ws/signals");
     let ws: WebSocket;
     let reconnectTimer: ReturnType<typeof setTimeout>;
 

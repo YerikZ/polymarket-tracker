@@ -17,6 +17,7 @@ import { TierBadge } from "./TierBadge";
 import { ScoreBreakdown } from "./ScoreBreakdown";
 import { WalletDetail } from "./WalletDetail";
 import { fmtUsd } from "../lib/utils";
+import { apiUrl } from "../lib/api";
 
 // ── Sort ─────────────────────────────────────────────────────────────────────
 
@@ -212,13 +213,13 @@ export function WalletTable() {
 
   const { data: wallets = [], isLoading } = useQuery<Wallet[]>({
     queryKey: ["wallets"],
-    queryFn: () => fetch("/api/wallets").then((r) => r.json()),
+    queryFn: () => fetch(apiUrl("//api/wallets")).then((r) => r.json()),
     refetchInterval: 60_000,
   });
   const qc = useQueryClient();
   const { data: settings } = useQuery<Settings>({
     queryKey: ["settings"],
-    queryFn: () => fetch("/api/settings").then((r) => r.json()),
+    queryFn: () => fetch(apiUrl("//api/settings")).then((r) => r.json()),
     staleTime: 30_000,
   });
   const manualTargets = settings?.copy_trading?.manual_target_wallets ?? [];
@@ -226,7 +227,7 @@ export function WalletTable() {
 
   const saveTargets = useMutation({
     mutationFn: async (targets: string[]) => {
-      const r = await fetch("/api/settings", {
+      const r = await fetch(apiUrl("//api/settings"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -244,7 +245,7 @@ export function WalletTable() {
 
   const refreshWallets = useMutation({
     mutationFn: async () => {
-      const r = await fetch("/api/wallets/refresh", { method: "POST" });
+      const r = await fetch(apiUrl("//api/wallets/refresh"), { method: "POST" });
       if (!r.ok) throw new Error(await r.text());
       return r.json();
     },
@@ -259,7 +260,7 @@ export function WalletTable() {
   const fetchAllTrades = useMutation({
     mutationFn: async () => {
       setFetchAllResult(null);
-      const r = await fetch("/api/wallets/fetch-all-trades", { method: "POST" });
+      const r = await fetch(apiUrl("//api/wallets/fetch-all-trades"), { method: "POST" });
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<{ status: string; total: number }>;
     },

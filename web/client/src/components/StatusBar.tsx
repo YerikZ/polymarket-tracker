@@ -4,6 +4,7 @@ import { useWatcherStatus, useStartWatcher, useStopWatcher } from "../hooks/useW
 import { fmtUsd } from "../lib/utils";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { PnlSummary, Settings } from "../lib/types";
+import { apiUrl } from "../lib/api";
 
 export function StatusBar() {
   const qc = useQueryClient();
@@ -14,20 +15,20 @@ export function StatusBar() {
 
   const { data: pnl } = useQuery<PnlSummary>({
     queryKey: ["pnl-summary"],
-    queryFn: () => fetch("/api/pnl/summary").then((r) => r.json()),
+    queryFn: () => fetch(apiUrl("//api/pnl/summary")).then((r) => r.json()),
     refetchOnWindowFocus: false,
     refetchInterval: false,
   });
 
   const { data: settings } = useQuery<Settings>({
     queryKey: ["settings"],
-    queryFn: () => fetch("/api/settings").then((r) => r.json()),
+    queryFn: () => fetch(apiUrl("//api/settings")).then((r) => r.json()),
     staleTime: 30_000,
   });
 
   const modeMutation = useMutation({
     mutationFn: (mode: "poll" | "stream") =>
-      fetch("/api/settings", {
+      fetch(apiUrl("//api/settings"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ watcher_mode: mode }),

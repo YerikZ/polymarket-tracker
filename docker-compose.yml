@@ -29,6 +29,7 @@ services:
       POLYMARKET_FUNDER: ${POLYMARKET_FUNDER:-}
       POLYMARKET_SIGNATURE_TYPE: ${POLYMARKET_SIGNATURE_TYPE:-1}
       POLYMARKET_POLYGON_WSS: ${POLYMARKET_POLYGON_WSS:-}
+      BASE_PATH: ${BASE_PATH:-/}
     depends_on:
       db:
         condition: service_healthy

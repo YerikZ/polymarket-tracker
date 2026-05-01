@@ -2,6 +2,7 @@ import { useState, useRef, KeyboardEvent } from "react";
 import { Plus, Trash2, Edit2, X, CheckCircle, XCircle, Loader2, Zap } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Basket, BasketConsensus, Settings } from "../lib/types";
+import { apiUrl } from "../lib/api";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -300,14 +301,14 @@ export function BasketManager() {
 
   const { data: baskets = [], isLoading } = useQuery<Basket[]>({
     queryKey: ["baskets"],
-    queryFn: () => fetch("/api/baskets").then((r) => r.json()),
+    queryFn: () => fetch(apiUrl("//api/baskets")).then((r) => r.json()),
     staleTime: 30_000,
   });
 
   // Current basket_ids from settings
   const { data: settings } = useQuery<Settings>({
     queryKey: ["settings"],
-    queryFn: () => fetch("/api/settings").then((r) => r.json()),
+    queryFn: () => fetch(apiUrl("//api/settings")).then((r) => r.json()),
     staleTime: 30_000,
   });
   const activeBasketIds: number[] = settings?.copy_trading?.basket_ids ?? [];
@@ -318,7 +319,7 @@ export function BasketManager() {
       const next = current.includes(basketId)
         ? current.filter((id) => id !== basketId)
         : [...current, basketId];
-      const r = await fetch("/api/settings", {
+      const r = await fetch(apiUrl("//api/settings"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ copy_trading: { ...(settings?.copy_trading ?? {}), basket_ids: next } }),
@@ -331,7 +332,7 @@ export function BasketManager() {
 
   const createMutation = useMutation({
     mutationFn: async (data: BasketFormData) => {
-      const r = await fetch("/api/baskets", {
+      const r = await fetch(apiUrl("//api/baskets"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),

@@ -2,13 +2,14 @@ import { useState, useEffect, useRef, KeyboardEvent } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Save, Eye, EyeOff, AlertTriangle, X } from "lucide-react";
 import type { Settings } from "../lib/types";
+import { apiUrl } from "../lib/api";
 
 async function fetchSettings(): Promise<Settings> {
-  return fetch("/api/settings").then((r) => r.json());
+  return fetch(apiUrl("//api/settings")).then((r) => r.json());
 }
 
 async function saveSettings(updates: Partial<Settings>): Promise<Settings> {
-  const r = await fetch("/api/settings", {
+  const r = await fetch(apiUrl("//api/settings"), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(updates),
