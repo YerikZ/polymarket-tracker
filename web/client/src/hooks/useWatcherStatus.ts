@@ -3,7 +3,7 @@ import type { WatcherStatus } from "../lib/types";
 import { apiUrl } from "../lib/api";
 
 async function fetchStatus(): Promise<WatcherStatus> {
-  const r = await fetch(apiUrl("//api/watcher/status"));
+  const r = await fetch(apiUrl("/api/watcher/status"));
   const data = await r.json();
   return {
     status: data.status ?? "stopped",
@@ -33,7 +33,7 @@ export function useStartWatcher() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (skipRecalculation: boolean = true) =>
-      fetch(apiUrl("//api/watcher/start"), {
+      fetch(apiUrl("/api/watcher/start"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ skip_recalculation: skipRecalculation }),
@@ -45,7 +45,7 @@ export function useStartWatcher() {
 export function useStopWatcher() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => fetch(apiUrl("//api/watcher/stop"), { method: "POST" }).then((r) => r.json()),
+    mutationFn: () => fetch(apiUrl("/api/watcher/stop"), { method: "POST" }).then((r) => r.json()),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["watcher-status"] }),
   });
 }

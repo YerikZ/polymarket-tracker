@@ -46,7 +46,7 @@ export function PositionsTable() {
     if (withPriceRefresh) {
       // POST /api/positions/refresh fetches live CLOB prices, writes them to DB,
       // and returns the updated positions — use that directly
-      const refreshed: Position[] = await fetch(apiUrl("//api/positions/refresh"), {
+      const refreshed: Position[] = await fetch(apiUrl("/api/positions/refresh"), {
         method: "POST",
       }).then((r) => r.json());
 
@@ -66,7 +66,7 @@ export function PositionsTable() {
       setPositions(pos);
     }
 
-    const sum = await fetch(apiUrl("//api/pnl/summary")).then((r) => r.json());
+    const sum = await fetch(apiUrl("/api/pnl/summary")).then((r) => r.json());
     setSummary(sum);
     setLastRefreshed(new Date());
   }, [mode]);

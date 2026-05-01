@@ -81,7 +81,7 @@ export function SignalFeed() {
 
   const { data: wallets = [] } = useQuery<Wallet[]>({
     queryKey: ["wallets"],
-    queryFn: () => fetch(apiUrl("//api/wallets")).then((r) => r.json()),
+    queryFn: () => fetch(apiUrl("/api/wallets")).then((r) => r.json()),
     refetchInterval: 60_000,
   });
 

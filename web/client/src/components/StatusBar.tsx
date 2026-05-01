@@ -15,20 +15,20 @@ export function StatusBar() {
 
   const { data: pnl } = useQuery<PnlSummary>({
     queryKey: ["pnl-summary"],
-    queryFn: () => fetch(apiUrl("//api/pnl/summary")).then((r) => r.json()),
+    queryFn: () => fetch(apiUrl("/api/pnl/summary")).then((r) => r.json()),
     refetchOnWindowFocus: false,
     refetchInterval: false,
   });
 
   const { data: settings } = useQuery<Settings>({
     queryKey: ["settings"],
-    queryFn: () => fetch(apiUrl("//api/settings")).then((r) => r.json()),
+    queryFn: () => fetch(apiUrl("/api/settings")).then((r) => r.json()),
     staleTime: 30_000,
   });
 
   const modeMutation = useMutation({
     mutationFn: (mode: "poll" | "stream") =>
-      fetch(apiUrl("//api/settings"), {
+      fetch(apiUrl("/api/settings"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ watcher_mode: mode }),
