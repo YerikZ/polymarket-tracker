@@ -10,6 +10,7 @@ RUN npm run build
 FROM python:3.11-slim
 WORKDIR /app
 ENV PYTHONPATH=/app
+ENV PYTHONUTF8=1
 
 # System deps for psycopg2-binary and web3
 RUN apt-get update && apt-get install -y --no-install-recommends \

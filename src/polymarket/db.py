@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 _pool: ThreadedConnectionPool | None = None
 
 # ---------------------------------------------------------------------------
-# DDL — all statements are idempotent (IF NOT EXISTS / ON CONFLICT)
+# DDL -- all statements are idempotent (IF NOT EXISTS / ON CONFLICT)
 # ---------------------------------------------------------------------------
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS wallets (
@@ -117,19 +117,19 @@ CREATE TABLE IF NOT EXISTS daily_spend (
     amount   DOUBLE PRECISION NOT NULL DEFAULT 0
 );
 
--- Web UI config store — single row (id always 1), seeded from config.yaml on first run
+-- Web UI config store -- single row (id always 1), seeded from config.yaml on first run
 CREATE TABLE IF NOT EXISTS settings (
     id         INT     PRIMARY KEY DEFAULT 1,
     config     JSONB   NOT NULL DEFAULT '{}',
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Score columns on wallets — populated by WalletScorer after each score_all() run
+-- Score columns on wallets -- populated by WalletScorer after each score_all() run
 ALTER TABLE wallets ADD COLUMN IF NOT EXISTS score        DOUBLE PRECISION;
 ALTER TABLE wallets ADD COLUMN IF NOT EXISTS tier         TEXT;
 ALTER TABLE wallets ADD COLUMN IF NOT EXISTS score_detail JSONB;
 
--- Copier outcome columns on alerts — written back after CopyTrader.copy() returns
+-- Copier outcome columns on alerts -- written back after CopyTrader.copy() returns
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS copier_status TEXT;
   -- placed | dry_run | shadow | skipped | failed  (NULL = no copier configured)
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS copier_reason TEXT;
@@ -137,7 +137,7 @@ ALTER TABLE alerts ADD COLUMN IF NOT EXISTS copier_reason TEXT;
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS copier_spend  DOUBLE PRECISION;
   -- USDC actually spent (non-zero for placed / dry_run / shadow)
 
--- ── Wallet trade history ──────────────────────────────────────────────────────
+-- -- Wallet trade history ------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS wallet_trades (
     id               BIGSERIAL        PRIMARY KEY,
@@ -163,7 +163,7 @@ CREATE INDEX IF NOT EXISTS idx_wallet_trades_addr_at
 CREATE INDEX IF NOT EXISTS idx_wallet_trades_condition
     ON wallet_trades (condition_id) WHERE condition_id <> '';
 
--- ── Market resolution cache ───────────────────────────────────────────────────
+-- -- Market resolution cache ---------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS market_outcomes (
     condition_id    TEXT        PRIMARY KEY,
@@ -181,7 +181,7 @@ UPDATE market_outcomes
  WHERE winner_outcome <> ''
    AND resolved = FALSE;
 
--- ── Baskets (consensus copy groups) ─────────────────────────────────────────
+-- -- Baskets (consensus copy groups) -----------------------------------------
 
 CREATE TABLE IF NOT EXISTS baskets (
     id                   SERIAL           PRIMARY KEY,
@@ -204,14 +204,14 @@ def init_pool(dsn: str, minconn: int = 1, maxconn: int = 10) -> None:
     """Initialise the global connection pool.  Call once at process start."""
     global _pool
     _pool = ThreadedConnectionPool(minconn, maxconn, dsn)
-    logger.info("PostgreSQL pool ready (dsn: %s…)", dsn[:40])
+    logger.info("PostgreSQL pool ready (dsn: %s...)", dsn[:40])
 
 
 def apply_schema() -> None:
     """Create all tables / indexes if they do not exist yet (idempotent)."""
     # Suppress collation-version warnings that appear on every new connection
     # when running on Alpine/musl Docker images.  Clearing datcollversion tells
-    # PostgreSQL to skip the version check entirely — safe when using libc locale.
+    # PostgreSQL to skip the version check entirely -- safe when using libc locale.
     # Must run outside a transaction block (autocommit).
     conn = _pool.getconn()
     try:
@@ -241,7 +241,7 @@ def get_conn() -> Generator:
     global _pool
     if _pool is None:
         raise RuntimeError(
-            "DB pool not initialised — call db.init_pool(dsn) before using Storage."
+            "DB pool not initialised -- call db.init_pool(dsn) before using Storage."
         )
     conn = _pool.getconn()
     try:
