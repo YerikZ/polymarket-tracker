@@ -32,7 +32,7 @@ _DEFAULTS: dict = {
     "proxy_password": "",
     "copy_trading": {
         "dry_run": True,
-        "signature_type": 1,
+        "signature_type": 2,
         "sizing_mode": "fixed",
         "fixed_usdc": 1.0,
         "reference_trade_usdc": 50.0,
@@ -57,6 +57,7 @@ _DEFAULTS: dict = {
         "position_check_interval": 60,
         "private_key": "",
         "funder": "",
+        "builder_code": "",
     },
 }
 
@@ -174,7 +175,8 @@ def build_copier_config(cfg: dict) -> "CopierConfig":
         private_key=ct.get("private_key", ""),
         funder=ct.get("funder", ""),
         chain_id=int(ct.get("chain_id", 137)),
-        signature_type=int(ct.get("signature_type", 1)),
+        signature_type=int(ct.get("signature_type", 2)),
+        builder_code=ct.get("builder_code", ""),
         sizing_mode=ct.get("sizing_mode", "fixed"),
         fixed_usdc=float(ct.get("fixed_usdc", 1.0)),
         reference_trade_usdc=float(ct.get("reference_trade_usdc", 50.0)),

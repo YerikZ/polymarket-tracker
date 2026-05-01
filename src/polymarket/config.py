@@ -61,5 +61,7 @@ def load(config_path: str | None = None) -> dict:
         ct["funder"] = os.environ["POLYMARKET_FUNDER"]
     if os.environ.get("POLYMARKET_SIGNATURE_TYPE"):
         ct["signature_type"] = int(os.environ["POLYMARKET_SIGNATURE_TYPE"])
+    if os.environ.get("POLYMARKET_BUILDER_CODE"):
+        ct["builder_code"] = os.environ["POLYMARKET_BUILDER_CODE"]
 
     return cfg

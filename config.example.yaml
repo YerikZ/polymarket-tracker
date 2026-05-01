@@ -58,6 +58,16 @@ copy_trading:
   # Recommended: set via environment variable POLYMARKET_FUNDER instead.
   funder: ""
 
+  # Signature type:
+  # 0 = EOA
+  # 1 = POLY_PROXY (Magic/email login)
+  # 2 = POLY_GNOSIS_SAFE (browser wallet / embedded wallet; most common)
+  signature_type: 2
+
+  # Optional builder attribution code for the v2 builder program.
+  # Recommended: set via POLYMARKET_BUILDER_CODE if you use one.
+  builder_code: ""
+
   # ---- Position sizing (choose one mode) ----
   # "fixed"       → proportional to the wallet's trade size, anchored to a reference:
   #                 spend = fixed_usdc × (signal_size / reference_trade_usdc)

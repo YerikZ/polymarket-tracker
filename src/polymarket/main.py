@@ -369,6 +369,7 @@ def _build_copy_trader(
             private_key=private_key,
             funder=funder,
             signature_type=int(ct_cfg.get("signature_type", 2)),
+            builder_code=ct_cfg.get("builder_code", ""),
             sizing_mode=ct_cfg.get("sizing_mode", "fixed"),
             fixed_usdc=float(ct_cfg.get("fixed_usdc", 50.0)),
             reference_trade_usdc=float(ct_cfg.get("reference_trade_usdc", 50.0)),
@@ -378,13 +379,18 @@ def _build_copy_trader(
             daily_limit_usdc=float(ct_cfg.get("daily_limit_usdc", 1000.0)),
             dry_run=dry_run,
             slippage=float(ct_cfg.get("slippage", 0.01)),
+            max_price=float(ct_cfg.get("max_price", 0.85)),
             blocked_keywords=list(ct_cfg.get("blocked_keywords", [])),
             min_score=float(ct_cfg.get("min_score", 50.0)),
             score_scale_size=bool(ct_cfg.get("score_scale_size", True)),
             manual_target_wallets=list(ct_cfg.get("manual_target_wallets", [])),
+            basket_ids=list(ct_cfg.get("basket_ids", [])),
             enable_topup=bool(ct_cfg.get("enable_topup", False)),
             max_topups=int(ct_cfg.get("max_topups", 2)),
             topup_size_multiplier=float(ct_cfg.get("topup_size_multiplier", 1.0)),
+            stop_loss_pct=float(ct_cfg.get("stop_loss_pct", 0.0)),
+            trailing_stop_pct=float(ct_cfg.get("trailing_stop_pct", 0.0)),
+            trailing_stop_min_gain=float(ct_cfg.get("trailing_stop_min_gain", 2.0)),
         ),
         storage=storage,
     )
@@ -573,7 +579,13 @@ def cmd_balance(args: argparse.Namespace, cfg: dict, storage: Storage) -> None:
         )
         return
 
-    copier_config = CopierConfig(private_key=private_key, funder=funder, dry_run=False)
+    copier_config = CopierConfig(
+        private_key=private_key,
+        funder=funder,
+        signature_type=int(ct_cfg.get("signature_type", 2)),
+        builder_code=ct_cfg.get("builder_code", ""),
+        dry_run=False,
+    )
     trader = CopyTrader(config=copier_config, storage=storage)
 
     with console.status("Fetching balance…"):

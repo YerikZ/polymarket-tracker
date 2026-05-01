@@ -189,6 +189,7 @@ export interface Settings {
     funder?: string;
     chain_id?: number;
     signature_type?: number;
+    builder_code?: string;
     dry_run?: boolean;
     sizing_mode?: string;
     fixed_usdc?: number;

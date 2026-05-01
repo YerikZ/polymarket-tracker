@@ -468,17 +468,26 @@ export function SettingsForm() {
         </Field>
         <Field
           label="Signature type"
-          hint="1 = POLY_PROXY (standard polymarket.com accounts) · 0 = EOA · 2 = POLY_GNOSIS_SAFE"
+          hint="2 = POLY_GNOSIS_SAFE (browser wallet / embedded wallet; most common) · 1 = POLY_PROXY (Magic/email login) · 0 = EOA"
         >
           <select
-            value={ct.signature_type ?? 1}
+            value={ct.signature_type ?? 2}
             onChange={(e) => setCt("signature_type", Number(e.target.value))}
             className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-xs text-zinc-100 w-full focus:outline-none focus:border-zinc-500"
           >
             <option value={0}>0 — EOA (direct wallet)</option>
-            <option value={1}>1 — POLY_PROXY (polymarket.com default)</option>
-            <option value={2}>2 — POLY_GNOSIS_SAFE</option>
+            <option value={1}>1 — POLY_PROXY (Magic/email login)</option>
+            <option value={2}>2 — POLY_GNOSIS_SAFE (most common)</option>
           </select>
+        </Field>
+        <Field label="Builder code" hint="Optional v2 builder attribution code. Leave blank unless you were given one.">
+          <input
+            type="text"
+            value={ct.builder_code ?? ""}
+            onChange={(e) => setCt("builder_code", e.target.value)}
+            placeholder="0x… or builder code"
+            className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-xs text-zinc-100 w-full focus:outline-none focus:border-zinc-500 placeholder:text-zinc-600"
+          />
         </Field>
         <Field label="Polygon WSS (Alchemy)" hint="Leave blank to keep existing">
           <SecretInput

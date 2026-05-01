@@ -61,14 +61,24 @@ class CopyConfigError(RuntimeError):
 def _normalize_wallet_ref(value: str) -> str:
     return value.strip().lower()
 
-# Lazy import so the tool works without py-clob-client for users who only watch
+# Lazy import so the tool works without py-clob-client-v2 for users who only watch
 def _clob_imports():
-    from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import (
-        MarketOrderArgs, OrderType, BalanceAllowanceParams, AssetType,
+    from py_clob_client_v2.client import ClobClient
+    from py_clob_client_v2.clob_types import (
+        AssetType,
+        BalanceAllowanceParams,
+        BuilderConfig,
+        MarketOrderArgsV2,
+        OrderType,
     )
-    from py_clob_client.order_builder.constants import BUY, SELL
-    return ClobClient, MarketOrderArgs, OrderType, BUY, SELL, BalanceAllowanceParams, AssetType
+    return (
+        ClobClient,
+        MarketOrderArgsV2,
+        OrderType,
+        BalanceAllowanceParams,
+        AssetType,
+        BuilderConfig,
+    )
 
 
 @dataclass
@@ -77,7 +87,8 @@ class CopierConfig:
     private_key: str
     funder: str                          # proxy wallet address (same as your Polymarket address)
     chain_id: int = 137                  # Polygon mainnet
-    signature_type: int = 2              # 0=EOA, 1=POLY_PROXY, 2=POLY_GNOSIS_SAFE (default for Polymarket proxy wallets)
+    signature_type: int = 2              # 0=EOA, 1=POLY_PROXY, 2=POLY_GNOSIS_SAFE
+    builder_code: str = ""               # Optional builder program attribution code
 
     # Sizing mode — exactly one should drive the spend amount
     sizing_mode: str = "fixed"           # "fixed" | "pct_balance" | "mirror_pct"
@@ -568,16 +579,19 @@ class CopyTrader:
     ) -> CopyResult:
         """Place a live market top-up BUY order spending `spend` USDC (FOK)."""
         try:
-            _, MarketOrderArgs, OrderType, BUY, _, _, _ = _clob_imports()
+            _, MarketOrderArgsV2, OrderType, _, _, _ = _clob_imports()
             client = self._get_client()
-            order_args = MarketOrderArgs(
+            order_args = MarketOrderArgsV2(
                 token_id=signal.token_id,
                 amount=spend,   # USDC to spend
-                side=BUY,
+                side="BUY",
                 price=price,    # worst-price limit
+                order_type=OrderType.FOK,
             )
-            signed = client.create_market_order(order_args)
-            resp = client.post_order(signed, OrderType.FOK)
+            resp = client.create_and_post_market_order(
+                order_args,
+                order_type=OrderType.FOK,
+            )
         except Exception as exc:
             logger.error("Top-up market order exception: %s", exc)
             return CopyResult(signal=signal, status="failed", reason=f"Top-up order exception: {exc}")
@@ -744,15 +758,21 @@ class CopyTrader:
 
     def _get_client(self):
         if self._clob is None:
-            ClobClient, _, _, _, _, _, _ = _clob_imports()
+            ClobClient, _, _, _, _, BuilderConfig = _clob_imports()
+            builder_config = (
+                BuilderConfig(builder_code=self._cfg.builder_code)
+                if self._cfg.builder_code
+                else None
+            )
             self._clob = ClobClient(
                 "https://clob.polymarket.com",
                 key=self._cfg.private_key,
                 chain_id=self._cfg.chain_id,
                 signature_type=self._cfg.signature_type,
+                builder_config=builder_config,
                 funder=self._cfg.funder,
             )
-            self._clob.set_api_creds(self._clob.create_or_derive_api_creds())
+            self._clob.set_api_creds(self._clob.create_or_derive_api_key())
             signer = self._clob.get_address()
             logger.info(
                 "CLOB client ready — signer (EOA): %s | funder (proxy): %s",
@@ -771,7 +791,7 @@ class CopyTrader:
         if self._cfg.dry_run and not self._cfg.private_key:
             return 0.0
         try:
-            _, _, _, _, _, BalanceAllowanceParams, AssetType = _clob_imports()
+            _, _, _, BalanceAllowanceParams, AssetType, _ = _clob_imports()
             resp = self._get_client().get_balance_allowance(
                 BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
             )
@@ -788,7 +808,7 @@ class CopyTrader:
         Returns -1.0 if the query fails so callers can decide to proceed anyway.
         """
         try:
-            _, _, _, _, _, BalanceAllowanceParams, AssetType = _clob_imports()
+            _, _, _, BalanceAllowanceParams, AssetType, _ = _clob_imports()
             resp = self._get_client().get_balance_allowance(
                 BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=token_id)
             )
@@ -819,17 +839,20 @@ class CopyTrader:
         cancelled immediately. No partial fills, no resting on the order book.
         """
         try:
-            _, MarketOrderArgs, OrderType, BUY, _, _, _ = _clob_imports()
+            _, MarketOrderArgsV2, OrderType, _, _, _ = _clob_imports()
             client = self._get_client()
 
-            order_args = MarketOrderArgs(
+            order_args = MarketOrderArgsV2(
                 token_id=signal.token_id,
                 amount=spend,      # USDC to spend (BUY semantics)
-                side=BUY,
+                side="BUY",
                 price=price,       # worst-price limit (slippage protection)
+                order_type=OrderType.FOK,
             )
-            signed = client.create_market_order(order_args)
-            resp = client.post_order(signed, OrderType.FOK)
+            resp = client.create_and_post_market_order(
+                order_args,
+                order_type=OrderType.FOK,
+            )
 
             if resp.get("success") or resp.get("orderID"):
                 order_id = resp.get("orderID", "")
@@ -884,17 +907,20 @@ class CopyTrader:
         On failure the position is left open so it can be retried.
         """
         try:
-            _, MarketOrderArgs, OrderType, _, SELL, _, _ = _clob_imports()
+            _, MarketOrderArgsV2, OrderType, _, _, _ = _clob_imports()
             client = self._get_client()
 
-            order_args = MarketOrderArgs(
+            order_args = MarketOrderArgsV2(
                 token_id=signal.token_id,
                 amount=shares,   # SELL semantics: amount = shares to sell
-                side=SELL,
+                side="SELL",
                 price=price,     # worst-price floor (slippage protection)
+                order_type=OrderType.FOK,
             )
-            signed = client.create_market_order(order_args)
-            resp   = client.post_order(signed, OrderType.FOK)
+            resp = client.create_and_post_market_order(
+                order_args,
+                order_type=OrderType.FOK,
+            )
 
             if resp.get("success") or resp.get("orderID"):
                 order_id = resp.get("orderID", "")
