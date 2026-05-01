@@ -203,7 +203,10 @@ CREATE INDEX IF NOT EXISTS idx_baskets_active ON baskets (active) WHERE active =
 def init_pool(dsn: str, minconn: int = 1, maxconn: int = 10) -> None:
     """Initialise the global connection pool.  Call once at process start."""
     global _pool
-    _pool = ThreadedConnectionPool(minconn, maxconn, dsn)
+    # Force UTF-8 client encoding regardless of server default.
+    # PostgreSQL initialised with --locale=C defaults to SQL_ASCII, which causes
+    # psycopg2 to reject non-ASCII characters in market titles and usernames.
+    _pool = ThreadedConnectionPool(minconn, maxconn, dsn, client_encoding="utf8")
     logger.info("PostgreSQL pool ready (dsn: %s...)", dsn[:40])
 
 
