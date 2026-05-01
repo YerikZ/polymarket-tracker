@@ -102,6 +102,75 @@ export interface WatcherStatus {
   error: string | null;
 }
 
+export interface HorizonMetrics {
+  trade_count: number;
+  buy_count: number;
+  avg_order_usdc: number;
+  median_order_usdc: number;
+  total_invested: number;
+  unique_markets: number;
+  active_days: number;
+  win_rate: number | null;
+  resolved_count: number;
+  avg_entry_price: number | null;
+}
+
+export interface QualificationPasses {
+  win_rate:     boolean | null;
+  track_record: boolean | null;
+  niche_focus:  boolean | null;
+  frequency:    boolean | null;
+  accumulation: boolean | null;
+  no_decline:   boolean | null;
+}
+
+export interface QualificationMetrics {
+  win_rate_90d:           number | null;
+  resolved_count_90d:     number;
+  earliest_trade_days:    number | null;
+  categories_detected:    string[];
+  niche_category_count:   number;
+  trades_per_month:       number | null;
+  avg_entries_per_market: number | null;
+  win_rate_30d:           number | null;
+}
+
+export interface QualificationCheck {
+  status:  "qualified" | "not_qualified" | "insufficient_data";
+  passes:  QualificationPasses;
+  metrics: QualificationMetrics;
+}
+
+export interface WalletTradeDetail {
+  address: string;
+  last_fetched_at: string | null;
+  horizons: Record<"7" | "14" | "30" | "60" | "90" | "120", HorizonMetrics>;
+  raw_trade_count: number;
+  qualification: QualificationCheck;
+}
+
+export interface Basket {
+  id: number;
+  name: string;
+  category: string;
+  wallet_addresses: string[];
+  consensus_threshold: number;
+  active: boolean;
+  created_at: string;
+}
+
+export interface BasketConsensus {
+  basket_id:    number;
+  basket_name:  string;
+  wallet_count: number;
+  agree_count:  number;
+  agree_pct:    number;
+  price_spread: number;
+  threshold:    number;
+  should_copy:  boolean;
+  reason:       string;
+}
+
 export interface Settings {
   top_n?: number;
   poll_interval?: number;
@@ -128,15 +197,20 @@ export interface Settings {
     mirror_pct?: number;
     max_trade_usdc?: number;
     daily_limit_usdc?: number;
-    min_order_size_cap?: number;
     slippage?: number;
+    max_price?: number;
     min_score?: number;
     score_scale_size?: boolean;
-    wallets_to_copy?: number;
     manual_target_wallets?: string[];
+    basket_ids?: number[];
+    basket_trade_refresh_interval?: number;
     enable_topup?: boolean;
     max_topups?: number;
     topup_size_multiplier?: number;
     blocked_keywords?: string[];
+    stop_loss_pct?: number;
+    trailing_stop_pct?: number;
+    trailing_stop_min_gain?: number;
+    position_check_interval?: number;
   };
 }

@@ -136,6 +136,63 @@ ALTER TABLE alerts ADD COLUMN IF NOT EXISTS copier_reason TEXT;
   -- human-readable explanation for the status
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS copier_spend  DOUBLE PRECISION;
   -- USDC actually spent (non-zero for placed / dry_run / shadow)
+
+-- ── Wallet trade history ──────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS wallet_trades (
+    id               BIGSERIAL        PRIMARY KEY,
+    address          TEXT             NOT NULL,
+    condition_id     TEXT             NOT NULL DEFAULT '',
+    token_id         TEXT             NOT NULL DEFAULT '',
+    title            TEXT             NOT NULL DEFAULT '',
+    outcome          TEXT             NOT NULL DEFAULT '',
+    side             TEXT             NOT NULL DEFAULT '',   -- BUY | SELL
+    size             DOUBLE PRECISION NOT NULL DEFAULT 0,
+    usdc_size        DOUBLE PRECISION NOT NULL DEFAULT 0,
+    price            DOUBLE PRECISION NOT NULL DEFAULT 0,
+    traded_at        TIMESTAMPTZ      NOT NULL,
+    transaction_hash TEXT             NOT NULL DEFAULT '',
+    fetched_at       TIMESTAMPTZ      NOT NULL DEFAULT now()
+);
+ALTER TABLE wallet_trades ADD COLUMN IF NOT EXISTS username TEXT NOT NULL DEFAULT '';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_trades_tx
+    ON wallet_trades (address, transaction_hash) WHERE transaction_hash <> '';
+CREATE INDEX IF NOT EXISTS idx_wallet_trades_addr_at
+    ON wallet_trades (address, traded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_wallet_trades_condition
+    ON wallet_trades (condition_id) WHERE condition_id <> '';
+
+-- ── Market resolution cache ───────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS market_outcomes (
+    condition_id    TEXT        PRIMARY KEY,
+    title           TEXT        NOT NULL DEFAULT '',
+    resolved        BOOLEAN     NOT NULL DEFAULT FALSE,
+    winner_outcome  TEXT        NOT NULL DEFAULT '',
+    winner_token_id TEXT        NOT NULL DEFAULT '',
+    closed          BOOLEAN     NOT NULL DEFAULT FALSE,
+    checked_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Back-fill: rows with a clear winner (outcome price >=95%) should be resolved.
+UPDATE market_outcomes
+   SET resolved = TRUE
+ WHERE winner_outcome <> ''
+   AND resolved = FALSE;
+
+-- ── Baskets (consensus copy groups) ─────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS baskets (
+    id                   SERIAL           PRIMARY KEY,
+    name                 TEXT             NOT NULL,
+    category             TEXT             NOT NULL DEFAULT '',
+    wallet_addresses     TEXT[]           NOT NULL DEFAULT '{}',
+    consensus_threshold  DOUBLE PRECISION NOT NULL DEFAULT 0.8,
+    active               BOOLEAN          NOT NULL DEFAULT TRUE,
+    created_at           TIMESTAMPTZ      NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_baskets_active ON baskets (active) WHERE active = TRUE;
 """
 
 

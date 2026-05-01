@@ -124,6 +124,195 @@ async def stop_watcher(state: WatcherState) -> None:
         state._monitor = None
 
 
+async def _basket_trade_refresh_loop(
+    storage: "Storage",
+    client,
+    basket_ids: list[int],
+    interval: int,
+) -> None:
+    """Background coroutine: refresh wallet_trades for basket members every `interval` seconds.
+
+    Runs concurrently with the main monitor/stream loop inside _run_watcher.
+    Fetches the last 3 days of trades per wallet so the 48-hour consensus window
+    always has fresh data even between signal detections.
+    """
+    logger.info(
+        "Basket trade refresh loop started — %d basket(s), interval %ds.",
+        len(basket_ids), interval,
+    )
+    while True:
+        await asyncio.sleep(interval)
+
+        # Collect all active basket wallet addresses
+        basket_addrs: set[str] = set()
+        for basket_id in basket_ids:
+            try:
+                basket = await asyncio.to_thread(storage.get_basket, basket_id)
+                if basket and basket.get("active"):
+                    basket_addrs.update(basket.get("wallet_addresses") or [])
+            except Exception as exc:
+                logger.warning("Basket refresh: failed to load basket %d: %s", basket_id, exc)
+
+        if not basket_addrs:
+            logger.debug("Basket refresh: no active basket wallets found, skipping.")
+            continue
+
+        logger.debug("Basket refresh: polling trades for %d wallet(s).", len(basket_addrs))
+        for address in basket_addrs:
+            try:
+                # Fetch last 3 days — enough to cover the 48-hour consensus window
+                trades = await asyncio.to_thread(client.activity_paginated, address, 3)
+                n = await asyncio.to_thread(storage.upsert_wallet_trades, address, trades)
+                if n:
+                    logger.info(
+                        "Basket refresh: +%d new trade(s) for %s…", n, address[:10]
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Basket refresh: failed to fetch trades for %s…: %s", address[:10], exc
+                )
+
+
+async def _position_monitor_loop(
+    storage: "Storage",
+    copy_trader,
+    interval: int,
+) -> None:
+    """Background coroutine: check open positions for stop-loss / trailing-stop every `interval` s.
+
+    Two exit conditions (both optional, 0 = disabled):
+
+    Stop-loss (from entry):
+        Exit when current_price ≤ entry_price × (1 − stop_loss_pct).
+        Protects against catastrophic downside from the start.
+        e.g. stop_loss_pct=0.40 → exit if price drops 40% below entry.
+
+    Trailing stop (from peak):
+        Exit when current_price ≤ peak_price × (1 − trailing_stop_pct),
+        but only AFTER price first reaches entry_price × trailing_stop_min_gain.
+        Protects locked-in gains without capping upside.
+        e.g. entry=1¢, trailing_stop_pct=0.30, trailing_stop_min_gain=2.0:
+          → arms when price ≥ 2¢
+          → peak reaches 38¢
+          → exits when price falls to 26.6¢ — a 2500%+ gain protected.
+
+    Peak prices are tracked in memory (dict keyed by position id), seeded from
+    current_price on first observation. Reset on watcher restart (acceptable —
+    the stop-loss still fires, and peak re-accumulates from the current level).
+    """
+    cfg = copy_trader._cfg
+    stop_loss_pct = cfg.stop_loss_pct
+    trailing_stop_pct = cfg.trailing_stop_pct
+    trailing_stop_min_gain = cfg.trailing_stop_min_gain
+
+    if not stop_loss_pct and not trailing_stop_pct:
+        logger.info("Position monitor: SL and trailing-stop both disabled — loop exiting.")
+        return
+
+    logger.info(
+        "Position monitor started — interval %ds | SL %.0f%% from entry | "
+        "trailing %.0f%% from peak (arms at %.1f× entry)",
+        interval,
+        stop_loss_pct * 100,
+        trailing_stop_pct * 100,
+        trailing_stop_min_gain,
+    )
+
+    # In-memory peak tracker: pos_id → highest current_price seen since monitor started.
+    # Seeded to current_price on first observation; updates each cycle.
+    peak_prices: dict[int, float] = {}
+
+    while True:
+        await asyncio.sleep(interval)
+
+        try:
+            positions = await asyncio.to_thread(storage.get_open_positions)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Position monitor: failed to fetch open positions: %s", exc)
+            continue
+
+        # Prune closed positions that are no longer returned
+        open_ids = {pos["id"] for pos in positions}
+        peak_prices = {k: v for k, v in peak_prices.items() if k in open_ids}
+
+        for pos in positions:
+            pos_id: int = pos["id"]
+            current_price = pos.get("current_price")
+            if current_price is None:
+                continue  # price hasn't been fetched yet for this position
+
+            current_price = float(current_price)
+            entry_price = float(pos.get("entry_price") or 0)
+            market_title = pos.get("market_title", "")[:40]
+
+            # Update in-memory peak (seed from current on first observation)
+            prev_peak = peak_prices.get(pos_id, current_price)
+            peak = max(prev_peak, current_price)
+            peak_prices[pos_id] = peak
+
+            trigger_reason: str | None = None
+
+            # ── Stop-loss: current price dropped ≥ stop_loss_pct below entry ──
+            if stop_loss_pct > 0 and entry_price > 0:
+                sl_threshold = round(entry_price * (1.0 - stop_loss_pct), 6)
+                if current_price <= sl_threshold:
+                    trigger_reason = (
+                        f"Stop-loss: ${current_price:.4f} ≤ ${sl_threshold:.4f} "
+                        f"(entry ${entry_price:.4f} − {stop_loss_pct*100:.0f}%)"
+                    )
+
+            # ── Trailing stop: current price retreated from peak ──────────────
+            # Only evaluated if stop-loss didn't already fire.
+            if trigger_reason is None and trailing_stop_pct > 0 and entry_price > 0:
+                arm_threshold = entry_price * trailing_stop_min_gain
+                if peak >= arm_threshold:
+                    ts_threshold = round(peak * (1.0 - trailing_stop_pct), 6)
+                    if current_price <= ts_threshold:
+                        gain_at_peak = (peak / entry_price - 1) * 100
+                        trigger_reason = (
+                            f"Trailing stop: ${current_price:.4f} ≤ ${ts_threshold:.4f} "
+                            f"(peak ${peak:.4f} [{gain_at_peak:+.0f}%] − {trailing_stop_pct*100:.0f}%)"
+                        )
+                else:
+                    # Log when close to arming so user can see it in logs
+                    pct_to_arm = (arm_threshold / current_price - 1) * 100 if current_price else 0
+                    if pct_to_arm < 20:  # only log when within 20% of arming
+                        logger.debug(
+                            "Position monitor [%s]: trailing stop not yet armed "
+                            "(peak $%.4f, need $%.4f = %.1f× entry, %.0f%% away)",
+                            market_title, peak, arm_threshold, trailing_stop_min_gain, pct_to_arm,
+                        )
+
+            if trigger_reason is None:
+                continue
+
+            logger.info(
+                "Position monitor: triggering close for pos %d [%s] — %s",
+                pos_id, market_title, trigger_reason,
+            )
+            try:
+                result = await asyncio.to_thread(
+                    copy_trader.close_position, pos, trigger_reason
+                )
+                if result:
+                    logger.info(
+                        "Position monitor: pos %d closed — %s",
+                        pos_id, result.reason,
+                    )
+                # Remove from peak tracker — position is now closed
+                peak_prices.pop(pos_id, None)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    "Position monitor: error closing pos %d: %s", pos_id, exc
+                )
+
+
 async def _run_watcher(
     state: WatcherState,
     storage: "Storage",
@@ -149,6 +338,14 @@ async def _run_watcher(
         wallet_refresh_interval = int(cfg.get("wallet_refresh_interval", 600))
         wss_url = cfg.get("polygon_wss", "").strip()
         watcher_mode = cfg.get("watcher_mode", "poll")
+        ct_cfg_top = cfg.get("copy_trading", {})
+        basket_ids: list[int] = [b for b in ct_cfg_top.get("basket_ids", []) if b]
+        basket_trade_refresh_interval: int = int(
+            ct_cfg_top.get("basket_trade_refresh_interval", 300)
+        )
+        position_check_interval: int = int(
+            ct_cfg_top.get("position_check_interval", 60)
+        )
 
         # Fail fast: stream mode requires polygon_wss before any network calls
         if watcher_mode == "stream" and not wss_url:
@@ -188,6 +385,23 @@ async def _run_watcher(
         has_creds = bool(ct_cfg.get("private_key") and ct_cfg.get("funder"))
         copy_trader: CopyTrader | None = None
         if has_creds:
+            # Fail fast: copy trading needs at least one target source.
+            # Mirrors the pre-flight check in CLI's _build_copy_trader().
+            manual_wallets = [w for w in ct_cfg.get("manual_target_wallets", []) if str(w).strip()]
+            basket_ids     = [b for b in ct_cfg.get("basket_ids", []) if b]
+            if not manual_wallets and not basket_ids:
+                err = (
+                    "Copy trading is enabled but no targets are configured. "
+                    "Add wallets to copy_trading.manual_target_wallets, "
+                    "or create a basket with wallet addresses and set copy_trading.basket_ids."
+                )
+                async with state._lock:
+                    state.status = "error"
+                    state.error = err
+                    state.task = None
+                logger.error(err)
+                return
+
             copy_trader = CopyTrader(
                 config=build_copier_config(cfg),
                 storage=storage,
@@ -241,6 +455,13 @@ async def _run_watcher(
         # inside a plain thread silently creates and discards the coroutine.
         def sync_on_signal(sig):
             state.last_signal_at = datetime.now(timezone.utc).isoformat()
+            # Write every detected BUY into wallet_trades immediately so the
+            # consensus query sees it without waiting for the next refresh cycle.
+            if sig.side == "BUY" and basket_ids:
+                try:
+                    storage.upsert_signal_as_trade(sig)
+                except Exception as exc:
+                    logger.debug("Failed to write signal to wallet_trades: %s", exc)
             if copy_trader:
                 try:
                     result = copy_trader.copy(sig)
@@ -258,6 +479,12 @@ async def _run_watcher(
         async def async_on_signal(sig):
             async with state._lock:
                 state.last_signal_at = datetime.now(timezone.utc).isoformat()
+            # Write every detected BUY into wallet_trades immediately (same as poll path).
+            if sig.side == "BUY" and basket_ids:
+                try:
+                    await asyncio.to_thread(storage.upsert_signal_as_trade, sig)
+                except Exception as exc:
+                    logger.debug("Failed to write signal to wallet_trades: %s", exc)
             if copy_trader:
                 try:
                     result = await asyncio.to_thread(copy_trader.copy, sig)
@@ -278,38 +505,69 @@ async def _run_watcher(
                         result.spend_usdc,
                     )
 
-        # Choose stream or poll (stream + wss_url already validated above)
-        if watcher_mode == "stream":
-            async with state._lock:
-                state.mode = "stream"
-                state.status = "running"
-
-            stream = PolymarketStream(
-                wss_url=wss_url,
-                client=client,
-                scanner=scanner,
-                storage=storage,
-                top_wallets=wallets,
-                min_position_usdc=min_position_usdc,
-                wallet_refresh_interval=wallet_refresh_interval,
+        # ── Basket trade refresh task ────────────────────────────────────────
+        # Runs concurrently with the main loop; cancelled when the watcher stops.
+        refresh_task: asyncio.Task | None = None
+        if basket_ids:
+            refresh_task = asyncio.create_task(
+                _basket_trade_refresh_loop(
+                    storage, client, basket_ids, basket_trade_refresh_interval
+                ),
+                name="basket-trade-refresh",
             )
-            await stream.run(async_on_signal)
-        else:
-            async with state._lock:
-                state.mode = "poll"
-                state.status = "running"
 
-            monitor = SignalMonitor(
-                client=client,
-                scanner=scanner,
-                storage=storage,
-                poll_interval=poll_interval,
-                min_position_usdc=min_position_usdc,
-                max_signal_age=max_signal_age,
+        # ── Position monitor task (TP / SL) ──────────────────────────────────
+        # Only spawned when copy trader is active and at least one TP/SL threshold is set.
+        monitor_task: asyncio.Task | None = None
+        if copy_trader and (
+            copy_trader._cfg.stop_loss_pct > 0 or copy_trader._cfg.trailing_stop_pct > 0
+        ):
+            monitor_task = asyncio.create_task(
+                _position_monitor_loop(storage, copy_trader, position_check_interval),
+                name="position-monitor",
             )
-            async with state._lock:
-                state._monitor = monitor
-            await asyncio.to_thread(monitor.run, sync_on_signal)
+
+        # ── Choose stream or poll (stream + wss_url already validated above) ─
+        try:
+            if watcher_mode == "stream":
+                async with state._lock:
+                    state.mode = "stream"
+                    state.status = "running"
+
+                stream = PolymarketStream(
+                    wss_url=wss_url,
+                    client=client,
+                    scanner=scanner,
+                    storage=storage,
+                    top_wallets=wallets,
+                    min_position_usdc=min_position_usdc,
+                    wallet_refresh_interval=wallet_refresh_interval,
+                )
+                await stream.run(async_on_signal)
+            else:
+                async with state._lock:
+                    state.mode = "poll"
+                    state.status = "running"
+
+                monitor = SignalMonitor(
+                    client=client,
+                    scanner=scanner,
+                    storage=storage,
+                    poll_interval=poll_interval,
+                    min_position_usdc=min_position_usdc,
+                    max_signal_age=max_signal_age,
+                )
+                async with state._lock:
+                    state._monitor = monitor
+                await asyncio.to_thread(monitor.run, sync_on_signal)
+        finally:
+            for bg_task in (refresh_task, monitor_task):
+                if bg_task and not bg_task.done():
+                    bg_task.cancel()
+                    try:
+                        await bg_task
+                    except asyncio.CancelledError:
+                        pass
 
     except asyncio.CancelledError:
         logger.info("Watcher task cancelled.")

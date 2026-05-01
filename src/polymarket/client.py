@@ -143,6 +143,61 @@ class PolymarketClient:
             params={"user": address, "limit": limit, "type": trade_type, "sortBy": "TIMESTAMP", "sortDirection": "DESC"},
         )
 
+    def activity_paginated(
+        self,
+        address: str,
+        days: int = 90,
+        page_size: int = 200,
+        max_pages: int = 20,
+    ) -> list[dict]:
+        """Fetch all trades within `days` by paginating with offset.
+
+        Returns a flat list of raw activity dicts sorted newest-first.
+        Stops early when the oldest item in a batch predates the cutoff.
+        """
+        from datetime import datetime, timezone, timedelta
+        cutoff_ts = (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
+
+        all_trades: list[dict] = []
+        offset = 0
+
+        for _ in range(max_pages):
+            try:
+                batch = self.get(
+                    DATA_API,
+                    "/activity",
+                    params={
+                        "user": address,
+                        "limit": page_size,
+                        "offset": offset,
+                        "type": "TRADE",
+                        "sortBy": "TIMESTAMP",
+                        "sortDirection": "DESC",
+                    },
+                )
+            except Exception as exc:
+                # 400 typically means the offset exceeded the API's limit — stop cleanly
+                logger.debug("activity_paginated stopping at offset %d: %s", offset, exc)
+                break
+            if not batch:
+                break
+
+            passed_cutoff = False
+            for item in batch:
+                ts = int(item.get("timestamp") or 0)
+                if ts > 1e12:
+                    ts = ts // 1000
+                if ts and ts < cutoff_ts:
+                    passed_cutoff = True
+                    break
+                all_trades.append(item)
+
+            if passed_cutoff or len(batch) < page_size:
+                break
+            offset += page_size
+
+        return all_trades
+
     def markets(self, condition_ids: list[str]) -> list[dict]:
         """Fetch market data for a list of condition IDs.
 
@@ -239,9 +294,9 @@ class PolymarketClient:
             closed           = bool(m.get("closed", False))
             accepting_orders = bool(m.get("acceptingOrders", True))
             uma_status       = m.get("umaResolutionStatus") or ""
-            resolved         = uma_status == "resolved" or (closed and not accepting_orders)
 
             # Determine winner from outcomePrices + clobTokenIds
+            # (must run before resolved check so winner presence can inform it)
             winner_outcome  = ""
             winner_token_id = ""
             try:
@@ -261,6 +316,14 @@ class PolymarketClient:
                         winner_token_id = str(tokens[winner_idx])  if winner_idx < len(tokens)  else ""
             except Exception as exc:
                 logger.debug("Could not parse resolution for %s: %s", cid[:16], exc)
+
+            # A market is resolved if UMA settled it, it's closed with no orders,
+            # OR a clear price winner (≥95%) was found (effectively settled).
+            resolved = (
+                uma_status == "resolved"
+                or (closed and not accepting_orders)
+                or bool(winner_outcome)
+            )
 
             statuses[cid] = {
                 "closed":           closed,

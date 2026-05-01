@@ -305,6 +305,15 @@ class Storage:
                 cur.execute("SELECT * FROM paper_positions ORDER BY id")
                 return [_row_to_dict(r) for r in cur.fetchall()]
 
+    def get_open_positions(self) -> list[dict]:
+        """Return all positions with position_status = 'open'."""
+        with db.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT * FROM paper_positions WHERE position_status = 'open' ORDER BY id"
+                )
+                return [_row_to_dict(r) for r in cur.fetchall()]
+
     def update_position_prices(self, updates: list[dict]) -> None:
         """Persist live prices for a batch of positions.
 
@@ -489,3 +498,298 @@ class Storage:
                     """,
                     (score, tier, json.dumps(detail), address),
                 )
+
+    # ── Wallet trade history ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _normalise_ts(val) -> datetime:
+        """Convert API timestamp (int seconds or ms, or datetime) to UTC datetime."""
+        if isinstance(val, datetime):
+            return val if val.tzinfo else val.replace(tzinfo=timezone.utc)
+        ts = int(val or 0)
+        if ts > 1_000_000_000_000:
+            ts = ts // 1000
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+    def upsert_wallet_trades(self, address: str, trades: list[dict], username: str = "") -> int:
+        """Insert new trades for a wallet; skip duplicates by (address, tx_hash).
+        Returns number of rows actually inserted."""
+        if not trades:
+            return 0
+        rows = []
+        for t in trades:
+            tx = t.get("transactionHash") or t.get("transaction_hash") or ""
+            try:
+                traded_at = self._normalise_ts(t.get("timestamp"))
+            except Exception:
+                continue
+            rows.append((
+                address,
+                username,
+                t.get("conditionId") or t.get("condition_id") or "",
+                t.get("tokenId") or t.get("token_id") or "",
+                t.get("title") or "",
+                t.get("outcome") or "",
+                (t.get("side") or "").upper(),
+                float(t.get("size") or 0),
+                float(t.get("usdcSize") or t.get("usdc_size") or 0),
+                float(t.get("price") or 0),
+                traded_at,
+                tx,
+            ))
+        if not rows:
+            return 0
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                psycopg2.extras.execute_values(
+                    cur,
+                    """
+                    INSERT INTO wallet_trades
+                        (address, username, condition_id, token_id, title, outcome, side,
+                         size, usdc_size, price, traded_at, transaction_hash)
+                    VALUES %s
+                    ON CONFLICT (address, transaction_hash)
+                        WHERE transaction_hash <> ''
+                    DO NOTHING
+                    """,
+                    rows,
+                )
+                return cur.rowcount
+
+    def upsert_signal_as_trade(self, signal) -> int:
+        """Write a detected Signal into wallet_trades immediately for consensus freshness.
+
+        Uses the signal's detected_at ISO timestamp as traded_at.
+        Idempotent — ON CONFLICT DO NOTHING if the tx_hash already exists.
+        Returns 1 if inserted, 0 if already present.
+        """
+        from datetime import datetime, timezone as tz
+        try:
+            traded_at = datetime.fromisoformat(
+                signal.detected_at.replace("Z", "+00:00")
+            )
+        except Exception:
+            traded_at = datetime.now(tz.utc)
+
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO wallet_trades
+                        (address, username, condition_id, token_id, title, outcome, side,
+                         size, usdc_size, price, traded_at, transaction_hash)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (address, transaction_hash)
+                        WHERE transaction_hash <> ''
+                    DO NOTHING
+                    """,
+                    (
+                        signal.wallet_address,
+                        getattr(signal, "username", ""),
+                        signal.condition_id,
+                        signal.token_id or "",
+                        signal.market_title,
+                        signal.outcome,
+                        signal.side.upper(),
+                        float(signal.size),
+                        float(signal.usdc_size),
+                        float(signal.price),
+                        traded_at,
+                        signal.transaction_hash or "",
+                    ),
+                )
+                return cur.rowcount
+
+    def get_wallet_trades(self, address: str, since_days: int = 90) -> list[dict]:
+        """Return trades joined with market_outcomes for horizon metric computation."""
+        with db.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        wt.id, wt.address, wt.condition_id, wt.token_id,
+                        wt.title, wt.outcome, wt.side, wt.size, wt.usdc_size,
+                        wt.price, wt.traded_at, wt.transaction_hash,
+                        mo.resolved,
+                        mo.winner_outcome,
+                        mo.winner_token_id,
+                        mo.closed AS market_closed
+                    FROM wallet_trades wt
+                    LEFT JOIN market_outcomes mo USING (condition_id)
+                    WHERE wt.address = %s
+                      AND wt.traded_at >= now() - (%s || ' days')::interval
+                    ORDER BY wt.traded_at DESC
+                    """,
+                    (address, str(since_days)),
+                )
+                return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def get_trade_last_fetched_at(self, address: str) -> datetime | None:
+        """Return the most recent fetched_at for this wallet's trades, or None."""
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT MAX(fetched_at) FROM wallet_trades WHERE address = %s",
+                    (address,),
+                )
+                row = cur.fetchone()
+                return row[0] if row and row[0] else None
+
+    def upsert_market_outcomes(self, outcomes: dict) -> None:
+        """Upsert market resolution status. outcomes: {condition_id: {resolved, winner_outcome, ...}}"""
+        if not outcomes:
+            return
+        rows = [
+            (
+                cid,
+                bool(d.get("closed", False)),
+                bool(d.get("resolved", False)),
+                d.get("winner_outcome") or d.get("winner") or "",
+                d.get("winner_token_id") or "",
+            )
+            for cid, d in outcomes.items()
+            if cid
+        ]
+        if not rows:
+            return
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                psycopg2.extras.execute_values(
+                    cur,
+                    """
+                    INSERT INTO market_outcomes
+                        (condition_id, closed, resolved, winner_outcome, winner_token_id)
+                    VALUES %s
+                    ON CONFLICT (condition_id) DO UPDATE SET
+                        closed          = EXCLUDED.closed,
+                        resolved        = EXCLUDED.resolved,
+                        winner_outcome  = EXCLUDED.winner_outcome,
+                        winner_token_id = EXCLUDED.winner_token_id,
+                        checked_at      = now()
+                    """,
+                    rows,
+                )
+
+    def get_unresolved_condition_ids(self, cids: list[str]) -> list[str]:
+        """Return condition_ids that are either missing from market_outcomes or not yet resolved."""
+        if not cids:
+            return []
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT condition_id FROM market_outcomes
+                    WHERE condition_id = ANY(%s) AND resolved = TRUE
+                    """,
+                    (cids,),
+                )
+                already_resolved = {row[0] for row in cur.fetchall()}
+        return [c for c in cids if c and c not in already_resolved]
+
+    # ── Baskets ───────────────────────────────────────────────────────────────
+
+    def get_baskets(self, active_only: bool = True) -> list[dict]:
+        """Return all baskets, optionally filtered to active ones."""
+        with db.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                if active_only:
+                    cur.execute("SELECT * FROM baskets WHERE active = TRUE ORDER BY created_at DESC")
+                else:
+                    cur.execute("SELECT * FROM baskets ORDER BY created_at DESC")
+                return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def get_basket(self, basket_id: int) -> dict | None:
+        """Return one basket by id, or None if not found."""
+        with db.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT * FROM baskets WHERE id = %s", (basket_id,))
+                row = cur.fetchone()
+                return _row_to_dict(row) if row else None
+
+    def create_basket(
+        self,
+        name: str,
+        category: str = "",
+        wallet_addresses: list[str] | None = None,
+        consensus_threshold: float = 0.8,
+    ) -> dict:
+        """Insert a new basket and return the created row."""
+        addresses = wallet_addresses or []
+        with db.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    INSERT INTO baskets (name, category, wallet_addresses, consensus_threshold)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING *
+                    """,
+                    (name, category, addresses, consensus_threshold),
+                )
+                return _row_to_dict(cur.fetchone())
+
+    def update_basket(
+        self,
+        basket_id: int,
+        name: str | None = None,
+        category: str | None = None,
+        wallet_addresses: list[str] | None = None,
+        consensus_threshold: float | None = None,
+    ) -> dict | None:
+        """Update non-None fields on the basket. Returns updated row or None."""
+        fields = []
+        values: list = []
+        if name is not None:
+            fields.append("name = %s"); values.append(name)
+        if category is not None:
+            fields.append("category = %s"); values.append(category)
+        if wallet_addresses is not None:
+            fields.append("wallet_addresses = %s"); values.append(wallet_addresses)
+        if consensus_threshold is not None:
+            fields.append("consensus_threshold = %s"); values.append(consensus_threshold)
+        if not fields:
+            return self.get_basket(basket_id)
+        values.append(basket_id)
+        with db.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    f"UPDATE baskets SET {', '.join(fields)} WHERE id = %s RETURNING *",
+                    values,
+                )
+                row = cur.fetchone()
+                return _row_to_dict(row) if row else None
+
+    def delete_basket(self, basket_id: int) -> bool:
+        """Soft-delete by setting active=FALSE. Returns True if the row existed."""
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE baskets SET active = FALSE WHERE id = %s",
+                    (basket_id,),
+                )
+                return cur.rowcount > 0
+
+    def get_recent_buys_for_condition(
+        self,
+        addresses: list[str],
+        condition_id: str,
+        within_hours: int = 48,
+    ) -> list[dict]:
+        """Return BUY trades from `addresses` for `condition_id` within the last N hours.
+        Used by basket consensus checking."""
+        if not addresses or not condition_id:
+            return []
+        with db.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT address, outcome, token_id, price, usdc_size, traded_at
+                    FROM wallet_trades
+                    WHERE address = ANY(%s)
+                      AND condition_id = %s
+                      AND side = 'BUY'
+                      AND traded_at >= now() - (%s || ' hours')::interval
+                    ORDER BY traded_at DESC
+                    """,
+                    (addresses, condition_id, str(within_hours)),
+                )
+                return [_row_to_dict(r) for r in cur.fetchall()]

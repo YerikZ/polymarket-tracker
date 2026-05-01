@@ -66,20 +66,25 @@ def _fetch_copier_updates(storage, ids: list[int]) -> list[dict]:
 
 @ws_router.websocket("/ws/signals")
 async def ws_signals(websocket: WebSocket):
-    await websocket.accept()
-    storage = websocket.app.state.storage
-
-    # Seed with last 20 signals
-    seed = await asyncio.to_thread(_fetch_alerts, storage, 20, 0)
-    await websocket.send_text(json.dumps({"type": "seed", "data": seed}))
-
-    # Track max id seen; also keep a short window of recently-sent ids that
-    # may not yet have a copier_status written (copier runs just after insert).
-    last_id = seed[0]["id"] if seed else 0
-    # ids sent without copier_status → watch for the update for up to ~5 polls
-    pending_copier: dict[int, int] = {}   # id → polls_remaining
-
+    # The ENTIRE body must be inside the try block.
+    # accept(), the seed send, and the poll loop can all raise if the client
+    # disconnects at any point. If any exception escapes, Starlette's
+    # ServerErrorMiddleware catches it and asserts scope["type"] == "http",
+    # crashing with AssertionError because this is a WebSocket scope.
     try:
+        await websocket.accept()
+        storage = websocket.app.state.storage
+
+        # Seed with last 20 signals
+        seed = await asyncio.to_thread(_fetch_alerts, storage, 20, 0)
+        await websocket.send_text(json.dumps({"type": "seed", "data": seed}))
+
+        # Track max id seen; also keep a short window of recently-sent ids that
+        # may not yet have a copier_status written (copier runs just after insert).
+        last_id = seed[0]["id"] if seed else 0
+        # ids sent without copier_status → watch for the update for up to ~5 polls
+        pending_copier: dict[int, int] = {}   # id → polls_remaining
+
         while True:
             await asyncio.sleep(1)
 

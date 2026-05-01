@@ -4,12 +4,14 @@ import { SignalFeed } from "./components/SignalFeed";
 import { WalletTable } from "./components/WalletTable";
 import { PositionsTable } from "./components/PositionsTable";
 import { SettingsForm } from "./components/SettingsForm";
+import { BasketManager } from "./components/BasketManager";
 
-type Tab = "signals" | "wallets" | "pnl" | "settings";
+type Tab = "signals" | "wallets" | "baskets" | "pnl" | "settings";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "signals", label: "Signals" },
   { id: "wallets", label: "Wallets" },
+  { id: "baskets", label: "Baskets" },
   { id: "pnl", label: "PnL" },
   { id: "settings", label: "Settings" },
 ];
@@ -42,6 +44,7 @@ export default function App() {
       <main className="flex-1 overflow-auto">
         {tab === "signals" && <SignalFeed />}
         {tab === "wallets" && <WalletTable />}
+        {tab === "baskets" && <BasketManager />}
         {tab === "pnl" && <PositionsTable />}
         {tab === "settings" && <SettingsForm />}
       </main>

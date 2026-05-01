@@ -350,6 +350,20 @@ def _build_copy_trader(
         )
         return None  # caller should bail if copy was requested but can't build trader
 
+    # Pre-flight: at least one of manual wallets or basket IDs must be configured.
+    # Without targets, every leaderboard wallet would be copied (unsafe default).
+    manual_wallets = [w for w in ct_cfg.get("manual_target_wallets", []) if str(w).strip()]
+    basket_ids     = [b for b in ct_cfg.get("basket_ids", []) if b]
+    if not manual_wallets and not basket_ids:
+        console.print(
+            "[red bold]Error:[/red bold] Copy trading requires at least one target.\n"
+            "  [bold]Option 1[/bold] — set [bold]copy_trading.manual_target_wallets[/bold] "
+            "to one or more wallet addresses.\n"
+            "  [bold]Option 2[/bold] — create a basket (with wallet addresses) and set "
+            "[bold]copy_trading.basket_ids[/bold] to its ID."
+        )
+        return None
+
     return CopyTrader(
         config=CopierConfig(
             private_key=private_key,
@@ -362,13 +376,11 @@ def _build_copy_trader(
             mirror_pct=float(ct_cfg.get("mirror_pct", 0.01)),
             max_trade_usdc=float(ct_cfg.get("max_trade_usdc", 500.0)),
             daily_limit_usdc=float(ct_cfg.get("daily_limit_usdc", 1000.0)),
-            min_order_size_cap=float(ct_cfg.get("min_order_size_cap", 10.0)),
             dry_run=dry_run,
             slippage=float(ct_cfg.get("slippage", 0.01)),
             blocked_keywords=list(ct_cfg.get("blocked_keywords", [])),
             min_score=float(ct_cfg.get("min_score", 50.0)),
             score_scale_size=bool(ct_cfg.get("score_scale_size", True)),
-            wallets_to_copy=int(ct_cfg.get("wallets_to_copy", 5)),
             manual_target_wallets=list(ct_cfg.get("manual_target_wallets", [])),
             enable_topup=bool(ct_cfg.get("enable_topup", False)),
             max_topups=int(ct_cfg.get("max_topups", 2)),
@@ -391,7 +403,7 @@ def _copy_info_line(copy_trader: CopyTrader | None) -> str:
     }.get(c.sizing_mode, c.sizing_mode)
     return (
         f"\n  Copy mode: {mode}  |  Sizing: [cyan]{sizing}[/cyan]  |  "
-        f"Targets: [cyan]{len(copy_trader._target_wallets) or max(1, c.wallets_to_copy)}[/cyan]  |  "
+        f"Targets: [cyan]{len(copy_trader._target_wallets) or 'none'}[/cyan]  |  "
         f"Max/trade: [cyan]${c.max_trade_usdc:.0f}[/cyan]  |  "
         f"Daily limit: [cyan]${c.daily_limit_usdc:.0f}[/cyan]"
     )

@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from polymarket import db
 from polymarket.storage import Storage
 from web.server.watcher import WatcherState
-from web.server.routes import alerts, positions, settings, wallets, watcher
+from web.server.routes import alerts, baskets, positions, settings, wallets, watcher
 from web.server.routes.alerts import ws_router as alerts_ws_router
 
 logger = logging.getLogger(__name__)
@@ -55,6 +55,7 @@ def create_app(seed_cfg: dict | None = None) -> FastAPI:
     app.include_router(alerts.router)
     app.include_router(alerts_ws_router)  # WebSocket — no prefix, must be before StaticFiles
     app.include_router(wallets.router)
+    app.include_router(baskets.router)
     app.include_router(positions.router)
     app.include_router(settings.router)
 

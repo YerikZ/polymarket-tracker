@@ -366,21 +366,18 @@ export function SettingsForm() {
         <Field label="Slippage" hint="Added to price for better fill">
           <NumInput value={ct.slippage} onChange={(v) => setCt("slippage", v)} step={0.005} />
         </Field>
+        <Field label="Max price" hint="Skip BUY if price ≥ this value (0 = disabled). Default 0.85 skips markets already at ≥85¢.">
+          <NumInput value={ct.max_price} onChange={(v) => setCt("max_price", v)} step={0.01} />
+        </Field>
         <Field label="Min score (0–100)" hint="Targets still need to pass this score gate">
           <NumInput value={ct.min_score} onChange={(v) => setCt("min_score", v)} />
         </Field>
-        <Field label="Wallets to copy/watch" hint="Used only when the manual target list is empty">
-          <NumInput value={ct.wallets_to_copy ?? 5} onChange={(v) => setCt("wallets_to_copy", v)} step={1} />
-        </Field>
-        <Field label="Manual target wallets" hint="Optional override. Add wallet addresses from the scored set to watch and copy directly">
+        <Field label="Manual target wallets" hint="Wallet addresses to copy. Leave empty to disable copy trading (scanning still runs).">
           <TagInput
             tags={ct.manual_target_wallets ?? []}
             onChange={(tags) => setCt("manual_target_wallets", tags)}
             placeholder="0xabc..., 0xdef..."
           />
-        </Field>
-        <Field label="Min order size cap" hint="Skip if market minimum exceeds this">
-          <NumInput value={ct.min_order_size_cap} onChange={(v) => setCt("min_order_size_cap", v)} step={0.5} />
         </Field>
         <Field label="Scale by wallet tier">
           <div className="flex items-center gap-2 pt-1">
@@ -420,6 +417,27 @@ export function SettingsForm() {
             onChange={(tags) => setCt("blocked_keywords", tags)}
             placeholder="bitcoin, ethereum…"
           />
+        </Field>
+        <Field
+          label="Stop-loss % (0–1)"
+          hint="Exit if price drops this % below entry price. 0.40 = sell when price falls 40% from entry. 0 = disabled."
+        >
+          <NumInput value={ct.stop_loss_pct} onChange={(v) => setCt("stop_loss_pct", v)} step={0.05} />
+        </Field>
+        <Field
+          label="Trailing stop % (0–1)"
+          hint="Exit if price retreats this % from its peak. 0.30 = sell when price falls 30% below its all-time high. 0 = disabled."
+        >
+          <NumInput value={ct.trailing_stop_pct} onChange={(v) => setCt("trailing_stop_pct", v)} step={0.05} />
+        </Field>
+        <Field
+          label="Trailing stop min gain (×)"
+          hint="Only arm trailing stop once price reaches this multiple of entry. 2.0 = only trail after price doubles. Prevents noise triggers near entry."
+        >
+          <NumInput value={ct.trailing_stop_min_gain} onChange={(v) => setCt("trailing_stop_min_gain", v)} step={0.5} />
+        </Field>
+        <Field label="Position check interval (s)" hint="How often to scan open positions for stop-loss / trailing-stop conditions">
+          <NumInput value={ct.position_check_interval} onChange={(v) => setCt("position_check_interval", v)} step={10} />
         </Field>
       </Section>
 

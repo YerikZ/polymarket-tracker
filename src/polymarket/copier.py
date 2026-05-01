@@ -50,15 +50,25 @@ logger = logging.getLogger(__name__)
 _POLY_MIN_ORDER_USDC = 1.0
 
 
+class CopyConfigError(RuntimeError):
+    """Raised when copy trading is enabled but no target wallets can be resolved.
+
+    Indicates misconfiguration: either manual_target_wallets and basket_ids are
+    both empty, or basket_ids are set but the baskets contain no wallet addresses.
+    """
+
+
 def _normalize_wallet_ref(value: str) -> str:
     return value.strip().lower()
 
 # Lazy import so the tool works without py-clob-client for users who only watch
 def _clob_imports():
     from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import OrderArgs, OrderType, BalanceAllowanceParams, AssetType
+    from py_clob_client.clob_types import (
+        MarketOrderArgs, OrderType, BalanceAllowanceParams, AssetType,
+    )
     from py_clob_client.order_builder.constants import BUY, SELL
-    return ClobClient, OrderArgs, OrderType, BUY, SELL, BalanceAllowanceParams, AssetType
+    return ClobClient, MarketOrderArgs, OrderType, BUY, SELL, BalanceAllowanceParams, AssetType
 
 
 @dataclass
@@ -71,15 +81,14 @@ class CopierConfig:
 
     # Sizing mode — exactly one should drive the spend amount
     sizing_mode: str = "fixed"           # "fixed" | "pct_balance" | "mirror_pct"
-    fixed_usdc: float = 50.0             # baseline spend when signal.usdc_size == reference_trade_usdc
-    reference_trade_usdc: float = 50.0   # reference signal size for fixed mode proportional scaling
+    fixed_usdc: float = 50.0             # flat USDC spend per order (sizing_mode="fixed")
+    reference_trade_usdc: float = 50.0   # unused in fixed mode; kept for mirror_pct reference
     pct_balance: float = 0.02            # used when sizing_mode = "pct_balance" (2%)
     mirror_pct: float = 0.01             # used when sizing_mode = "mirror_pct" (1% of original)
 
     # Safety limits
     max_trade_usdc: float = 500.0        # hard cap per trade
     daily_limit_usdc: float = 1000.0     # total cap for today
-    min_order_size_cap: float = 10.0     # skip if market's min_order_size exceeds this (avoids forced large buys)
 
     # Execution
     dry_run: bool = True                 # True = simulate only, never submit
@@ -89,19 +98,36 @@ class CopierConfig:
     blocked_keywords: list = field(default_factory=list)
     # Any market whose title contains one of these words (case-insensitive) is skipped.
     # Example: ["bitcoin", "ethereum", "crypto", "btc", "eth", "solana"]
+    max_price: float = 0.85
+    # Skip BUY signals where the market price exceeds this value (0 = disabled).
+    # E.g. 0.85 skips markets already trading at ≥85¢ — limited upside, high risk.
 
     # Scoring
     min_score: float = 50.0             # skip wallets with score below this (0 = disable)
     score_scale_size: bool = True        # scale position size by wallet's copy_size_pct
 
-    # Target selection
-    wallets_to_copy: int = 5
+    # Target selection — manual list only; no auto-copy fallback
     manual_target_wallets: list[str] = field(default_factory=list)
+
+    # Basket / consensus copy
+    # List of basket IDs (from the baskets table) to gate copy signals through.
+    # If a signal's wallet is in one of these baskets, the copy only executes
+    # when ≥ consensus_threshold of basket wallets agree on the same outcome.
+    basket_ids: list[int] = field(default_factory=list)
 
     # Repeated-order top-up
     enable_topup: bool = False
     max_topups: int = 2
     topup_size_multiplier: float = 1.0
+
+    # Take-profit / stop-loss (position monitor)
+    # stop_loss_pct:          0 = disabled; 0.40 = exit if price drops ≥ 40% below entry_price
+    # trailing_stop_pct:      0 = disabled; 0.30 = exit if price retreats 30% below its peak
+    # trailing_stop_min_gain: only arm trailing stop once price ≥ this multiple of entry_price
+    #                         2.0 = don't trail until price at least doubles (avoids noise near entry)
+    stop_loss_pct: float = 0.0
+    trailing_stop_pct: float = 0.0
+    trailing_stop_min_gain: float = 2.0
 
 
 class CopyTrader:
@@ -118,58 +144,147 @@ class CopyTrader:
         self._buy_lock = threading.Lock()
         self._pending_buys: set[str] = set()  # market keys currently being processed
         self._target_wallets: set[str] = set()
+        self._config_error: str | None = None  # set by update_scores() on CopyConfigError
         self._manual_refs = {
             _normalize_wallet_ref(value)
             for value in config.manual_target_wallets
             if value.strip()
         }
+        # Short-lived consensus cache: avoid N identical DB queries per poll cycle
+        # when multiple basket wallets buy the same market in the same window.
+        # Key: "condition_id:outcome", Value: (timestamp, result_dict | None)
+        self._consensus_cache: dict[str, tuple[float, dict | None]] = {}
 
     def update_scores(self, scores: dict[str, WalletScore]) -> None:
         """Called by cmd_watch after computing/refreshing wallet scores."""
         self._scores = scores
-        self._target_wallets = self._select_target_wallets(scores)
+        try:
+            self._target_wallets = self._select_target_wallets(scores)
+            self._config_error = None  # cleared once a valid target set is resolved
+        except CopyConfigError as exc:
+            logger.error(
+                "Copy trading misconfigured — no orders will be placed until fixed: %s", exc
+            )
+            self._target_wallets = set()
+            self._config_error = str(exc)
         logger.info("Score cache updated for %d wallets.", len(scores))
 
     def _select_target_wallets(self, scores: dict[str, WalletScore]) -> set[str]:
-        """Select target wallets from scored candidates."""
-        refs = self._manual_refs
-        selected: list[WalletScore]
-        if refs:
-            # Manual mode: match against ALL scored wallets — do not apply the
-            # eligibility filter (copy_size_pct / insufficient_data).  The user
-            # explicitly chose these addresses and we must honour all of them
-            # regardless of scoring confidence.
+        """Resolve the effective copy target set — exactly one of three branches applies.
+
+        Branch 1 — manual_target_wallets is non-empty:
+            Copy only from those wallets (filtered against current scored set).
+            Returns set() transiently if none have been scored yet (will resolve next cycle).
+
+        Branch 2 — manual list is empty AND basket_ids resolves to ≥1 address:
+            Copy only from basket-member wallets (consensus gate will also apply in copy()).
+
+        Branch 3 — both are empty/unresolvable:
+            Raise CopyConfigError — misconfiguration must be fixed; no orders are placed.
+        """
+        # Branch 1 — manual wallet list
+        if self._manual_refs:
             matched = [
                 ws for ws in scores.values()
-                if any(ref in {_normalize_wallet_ref(ws.address)} for ref in refs)
+                if _normalize_wallet_ref(ws.address) in self._manual_refs
             ]
-            selected = matched
-            mode = "manual"
-        else:
-            # Auto mode: filter by eligibility, then pick top N by total score.
-            eligible = [
-                ws for ws in scores.values()
-                if ws.copy_size_pct > 0 and not ws.insufficient_data
-            ]
-            if not eligible:
-                logger.warning("No eligible target wallets found after scoring.")
-                return set()
-            ranked_by_total = sorted(eligible, key=lambda ws: ws.total, reverse=True)
-            selected = ranked_by_total[: max(1, self._cfg.wallets_to_copy)]
-            mode = "auto"
+            if not matched:
+                logger.warning(
+                    "Manual target wallets configured but none have been scored yet — "
+                    "will retry next scoring cycle."
+                )
+                return set()  # transient: gate stays active, all signals skipped until matched
+            logger.info(
+                "Branch 1 — manual targets: %d wallet(s) selected: %s",
+                len(matched),
+                ", ".join(ws.address for ws in matched),
+            )
+            return {ws.address for ws in matched}
 
-        if not selected:
-            logger.warning("Target selection mode '%s' produced no scored wallets.", mode)
-            return set()
+        # Branch 2 — basket wallets (manual list is empty)
+        if self._cfg.basket_ids:
+            basket_addrs: set[str] = set()
+            for basket_id in self._cfg.basket_ids:
+                try:
+                    basket = self._storage.get_basket(basket_id)
+                    if basket and basket.get("active"):
+                        basket_addrs.update(basket.get("wallet_addresses") or [])
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to load basket %d for target selection: %s", basket_id, exc
+                    )
+            if basket_addrs:
+                logger.info(
+                    "Branch 2 — basket targets: using %d wallet(s) from basket(s) %s.",
+                    len(basket_addrs),
+                    self._cfg.basket_ids,
+                )
+                return basket_addrs
+            raise CopyConfigError(
+                f"Basket IDs {self._cfg.basket_ids} are configured but resolve to zero active "
+                "wallet addresses. Add wallets to the basket or disable copy trading."
+            )
 
-        target_wallets = {ws.address for ws in selected}
-        logger.info(
-            "Selected %d target wallet(s) in %s mode: %s",
-            len(selected),
-            mode,
-            ", ".join(ws.address for ws in selected),
+        # Branch 3 — nothing configured → hard error
+        raise CopyConfigError(
+            "Copy trading is enabled but no target wallets are configured. "
+            "Set copy_trading.manual_target_wallets to specific wallet addresses, "
+            "OR create a basket with wallet addresses and set copy_trading.basket_ids."
         )
-        return target_wallets
+
+    def _check_basket_consensus(self, signal) -> dict | None:
+        """
+        Check whether any configured basket that contains signal.wallet_address
+        has reached consensus on this market+outcome.
+
+        Returns None if the wallet is not in any configured basket (fail-open).
+        Returns the consensus result dict if the wallet IS in a basket.
+        Exceptions are caught and logged; returns None on error (fail-open).
+
+        Results are cached per (condition_id, outcome) for 120 s so repeated
+        signals for the same market within a poll cycle don't each hit the DB.
+        """
+        import time
+        cache_key = f"{signal.condition_id}:{signal.outcome}"
+        now = time.monotonic()
+        if cache_key in self._consensus_cache:
+            cached_ts, cached_result = self._consensus_cache[cache_key]
+            if now - cached_ts < 120:
+                return cached_result
+
+        from .basket import check_consensus as _consensus
+
+        for basket_id in self._cfg.basket_ids:
+            try:
+                basket = self._storage.get_basket(basket_id)
+                if not basket or not basket.get("active"):
+                    continue
+                addresses = basket.get("wallet_addresses") or []
+                if signal.wallet_address not in addresses:
+                    continue  # this wallet is not in this basket — skip
+
+                recent_buys = self._storage.get_recent_buys_for_condition(
+                    addresses, signal.condition_id, within_hours=48,
+                )
+                result = _consensus(basket, signal.condition_id, signal.outcome, recent_buys)
+                logger.info(
+                    "Basket '%s' consensus for market %s: %s",
+                    basket.get("name"), signal.condition_id[:16], result["reason"],
+                )
+                self._consensus_cache[cache_key] = (now, result)
+                return result
+
+            except Exception as exc:
+                logger.warning(
+                    "Basket consensus check failed for basket %d: %s", basket_id, exc
+                )
+                # Fail open — a DB error should not silently block a valid copy signal
+                return None
+
+        # Wallet not in any configured basket — cache the None result too so
+        # subsequent signals for the same market skip the basket iteration.
+        self._consensus_cache[cache_key] = (now, None)
+        return None
 
     def is_daily_limit_reached(self) -> bool:
         """Return True if today's spend has hit or exceeded the daily cap."""
@@ -188,12 +303,21 @@ class CopyTrader:
                 reason="No token_id in signal — cannot place order without ERC-1155 asset ID",
             )
 
-        # Target mode: only act on signals from the chosen target set
-        if self._target_wallets or self._manual_refs:
+        # Target gate — always active when copy trading has any configuration.
+        # The condition is intentionally broad so a startup race (before the first
+        # score cycle) never lets every leaderboard wallet through.
+        if self._target_wallets or self._manual_refs or self._cfg.basket_ids:
+            # Misconfiguration detected during last update_scores() call.
+            if self._config_error:
+                return CopyResult(
+                    signal=signal, status="skipped",
+                    reason=f"Config error: {self._config_error}",
+                )
+            # Transient: manual refs present but no wallets scored yet (first cycle).
             if not self._target_wallets:
                 return CopyResult(
                     signal=signal, status="skipped",
-                    reason="Target selection: no scored wallets selected yet",
+                    reason="Target selection: no wallets matched yet — retry after scoring cycle",
                 )
             if signal.wallet_address not in self._target_wallets:
                 return CopyResult(
@@ -203,6 +327,17 @@ class CopyTrader:
 
         if signal.side == "SELL":
             return self._copy_sell(signal)
+
+        # ── Cheap pre-filters (no DB I/O) ────────────────────────────────────
+        # Run these before the consensus check so we never hit the DB for
+        # signals that would be rejected by price/keyword rules anyway.
+
+        # Skip high-price markets — limited upside, user-configurable ceiling
+        if self._cfg.max_price > 0 and signal.price >= self._cfg.max_price:
+            return CopyResult(
+                signal=signal, status="skipped",
+                reason=f"Price {signal.price:.4f} ≥ max_price {self._cfg.max_price:.2f}. Skipping.",
+            )
 
         # Skip resolved markets — price is 0 (lost) or 1 (won), nothing left to trade
         if signal.price <= 0.01 or signal.price >= 0.97:
@@ -221,7 +356,9 @@ class CopyTrader:
                         reason=f"Market blocked by keyword '{kw}': {signal.market_title[:50]}",
                     )
 
-        # Dedup: skip if already invested in this market.
+        # ── Dedup: skip if already invested in this market ───────────────────
+        # Check before the consensus query: no point running consensus if we
+        # already own this market and top-ups are disabled.
         # Also check the in-memory pending set — concurrent stream signals for
         # the same market (multiple wallets buying simultaneously) can all pass
         # the DB check before any of them has written the position record.
@@ -244,6 +381,20 @@ class CopyTrader:
             # Reserve the market slot before releasing the lock
             if not existing:
                 self._pending_buys.add(market_key)
+
+        # ── Basket consensus gate ─────────────────────────────────────────────
+        # Placed after cheap filters and dedup so the DB query only runs when
+        # we actually intend to buy. Results are cached per (condition_id, outcome)
+        # for 120 s to avoid N identical queries per poll cycle when multiple
+        # basket wallets buy the same market in the same window.
+        if self._cfg.basket_ids:
+            consensus = self._check_basket_consensus(signal)
+            if consensus is not None and not consensus["should_copy"]:
+                self._pending_buys.discard(market_key)
+                return CopyResult(
+                    signal=signal, status="skipped",
+                    reason=f"Basket consensus not reached: {consensus['reason']}",
+                )
 
         if existing:
             return self._topup_position(signal, existing)
@@ -298,35 +449,6 @@ class CopyTrader:
         order_price = round(signal.price + self._cfg.slippage, 4)
         order_price = min(order_price, 0.99)  # price can't exceed 0.99 on Polymarket
 
-        # Fetch the per-market minimum order size from the CLOB order book.
-        min_order_size = 1.0  # safe default if fetch fails
-        if not self._cfg.dry_run:
-            try:
-                book = self._get_client().get_order_book(signal.token_id)
-                if book.min_order_size:
-                    min_order_size = float(book.min_order_size)
-                    logger.debug("Market min_order_size: %.2f shares", min_order_size)
-            except Exception as exc:
-                logger.debug("Could not fetch order book min size: %s", exc)
-
-        # Skip if the market's minimum is above our cap (prevents forced large buys)
-        if min_order_size > self._cfg.min_order_size_cap:
-            self._pending_buys.discard(market_key)
-            return CopyResult(
-                signal=signal, status="skipped",
-                reason=(
-                    f"Market requires {min_order_size:.0f} shares minimum, "
-                    f"exceeds cap of {self._cfg.min_order_size_cap:.0f}. "
-                    f"Raise min_order_size_cap in config to allow."
-                ),
-            )
-
-        # Bump spend up to meet the market minimum if needed, then cap at max_trade_usdc
-        min_required = round(min_order_size * order_price, 2)
-        if spend < min_required:
-            logger.debug("Spend $%.2f below min floor $%.2f — bumping up", spend, min_required)
-            spend = min_required
-
         # Cap per trade
         spend = min(spend, self._cfg.max_trade_usdc)
 
@@ -338,13 +460,14 @@ class CopyTrader:
                 reason=f"Computed spend ${spend:.2f} is below API minimum of ${_POLY_MIN_ORDER_USDC:.2f} USDC",
             )
 
-        shares = round(spend / order_price, 2)
+        # Estimate shares for logging and DB records (actual fill may differ slightly at market).
+        est_shares = round(spend / order_price, 2)
 
         if self._cfg.dry_run or cap_hit:
             label = "SHADOW DRY-RUN (cap hit)" if cap_hit else "DRY RUN"
             logger.info(
-                "[%s] Would BUY %.2f shares of %s @ $%.4f (≈$%.2f USDC)",
-                label, shares, signal.market_title[:40], order_price, spend,
+                "[%s] Would BUY $%.2f USDC of %s @ worst-price $%.4f (≈%.2f shares)",
+                label, spend, signal.market_title[:40], order_price, est_shares,
             )
             self._storage.append_paper_position({
                 "condition_id": signal.condition_id,
@@ -352,7 +475,7 @@ class CopyTrader:
                 "market_title": signal.market_title,
                 "outcome": signal.outcome,
                 "entry_price": order_price,
-                "shares": shares,
+                "shares": est_shares,
                 "spend_usdc": spend,
                 "opened_at": signal.detected_at,
                 "wallet_address": signal.wallet_address,
@@ -367,13 +490,13 @@ class CopyTrader:
             status_label = "shadow" if cap_hit else "dry_run"
             return CopyResult(
                 signal=signal, status=status_label,
-                reason=f"{label}: would place BUY {shares:.2f} shares @ ${order_price:.4f} (≈${spend:.2f} USDC)",
+                reason=f"{label}: would BUY $%.2f USDC @ worst-price ${order_price:.4f} (≈{est_shares:.2f} shares)" % spend,
                 spend_usdc=spend,
                 price=order_price,
             )
 
-        # Live execution
-        return self._place_order(signal, shares, order_price, spend)
+        # Live execution — pass USDC spend directly; market order handles sizing
+        return self._place_order(signal, order_price, spend)
 
     def _topup_position(self, signal: Signal, existing: dict) -> CopyResult:
         """Add to an existing open position when an active target buys again."""
@@ -416,55 +539,60 @@ class CopyTrader:
             )
 
         order_price = round(min(signal.price + self._cfg.slippage, 0.99), 4)
-        shares = round(spend / order_price, 2)
+        est_shares = round(spend / order_price, 2)
 
         logger.info(
-            "Top-up #%d for %s: +$%.2f (x%.2f) at %.4f -> %.2f shares",
-            topup_count + 1, signal.market_title[:40], spend, multiplier, order_price, shares,
+            "Top-up #%d for %s: +$%.2f USDC (x%.2f) @ worst-price %.4f (≈%.2f shares)",
+            topup_count + 1, signal.market_title[:40], spend, multiplier, order_price, est_shares,
         )
 
         if self._cfg.dry_run:
-            self._storage.add_to_position(existing["id"], shares, spend)
+            self._storage.add_to_position(existing["id"], est_shares, spend)
             self._storage.record_daily_spend(date.today().isoformat(), spend)
             return CopyResult(
                 signal=signal,
                 status="dry_run",
                 spend_usdc=spend,
                 price=order_price,
-                reason=f"DRY RUN TOP-UP #{topup_count + 1}: +{shares:.2f} shares @ ${order_price:.4f}",
+                reason=f"DRY RUN TOP-UP #{topup_count + 1}: +${spend:.2f} USDC @ worst-price ${order_price:.4f} (≈{est_shares:.2f} shares)",
             )
 
-        return self._place_topup_order(signal, existing, shares, order_price, spend)
+        return self._place_topup_order(signal, existing, order_price, spend)
 
     def _place_topup_order(
         self,
         signal: Signal,
         existing: dict,
-        shares: float,
         price: float,
         spend: float,
     ) -> CopyResult:
-        """Place a live top-up buy order and update the DB position on success."""
+        """Place a live market top-up BUY order spending `spend` USDC (FOK)."""
         try:
-            _, OrderArgs, OrderType, BUY, _, _, _ = _clob_imports()
+            _, MarketOrderArgs, OrderType, BUY, _, _, _ = _clob_imports()
             client = self._get_client()
-            order_args = OrderArgs(token_id=signal.token_id, price=price, size=shares, side=BUY)
-            signed = client.create_order(order_args)
-            resp = client.post_order(signed, OrderType.GTC)
+            order_args = MarketOrderArgs(
+                token_id=signal.token_id,
+                amount=spend,   # USDC to spend
+                side=BUY,
+                price=price,    # worst-price limit
+            )
+            signed = client.create_market_order(order_args)
+            resp = client.post_order(signed, OrderType.FOK)
         except Exception as exc:
-            logger.error("Top-up order exception: %s", exc)
+            logger.error("Top-up market order exception: %s", exc)
             return CopyResult(signal=signal, status="failed", reason=f"Top-up order exception: {exc}")
 
         if resp.get("success") or resp.get("orderID"):
             topup_num = int(existing.get("topup_count", 0) or 0) + 1
-            self._storage.add_to_position(existing["id"], shares, spend)
+            est_shares = round(spend / price, 2)
+            self._storage.add_to_position(existing["id"], est_shares, spend)
             self._storage.record_daily_spend(date.today().isoformat(), spend)
             return CopyResult(
                 signal=signal,
                 status="placed",
                 spend_usdc=spend,
                 price=price,
-                reason=f"Top-up #{topup_num}: +{shares:.2f} shares @ ${price:.4f} (order {resp.get('orderID','')})",
+                reason=f"Top-up #{topup_num}: +$%.2f USDC @ worst-price ${price:.4f} (order {resp.get('orderID','')})" % spend,
                 order_id=resp.get("orderID", ""),
             )
 
@@ -484,13 +612,15 @@ class CopyTrader:
         pos_is_shadow  = pos_is_dry_run and not self._cfg.dry_run
 
         # For live positions, verify we actually hold the tokens on-chain.
-        # GTC buy orders are recorded immediately but may never be filled.
+        # FOK buy orders either fill completely or cancel; a zero balance means
+        # the original buy was rejected (price moved past our worst-price limit).
         if not pos_is_dry_run:
             on_chain = self._get_token_balance(signal.token_id)
             if on_chain == 0.0:
                 logger.warning(
                     "Sell skipped for %s: on-chain token balance is 0 "
-                    "(buy order was likely never filled). Cancelling DB position.",
+                    "(FOK buy was likely cancelled — price exceeded worst-price limit). "
+                    "Cancelling DB position.",
                     signal.market_title[:40],
                 )
                 self._storage.cancel_paper_position(pos["id"])
@@ -505,26 +635,11 @@ class CopyTrader:
                 )
                 shares = on_chain
 
-            # Fetch the actual market minimum from the CLOB order book.
-            # If shares are below it (e.g. partial GTC fill) we can't sell —
-            # leave the position open rather than erroring.
-            market_min = 1.0
-            try:
-                book = self._get_client().get_order_book(signal.token_id)
-                if book.min_order_size:
-                    market_min = float(book.min_order_size)
-            except Exception as exc:
-                logger.debug("Could not fetch order book min size for sell: %s", exc)
-
-            if shares < market_min:
-                logger.warning(
-                    "Sell skipped for %s: %.4f shares below market minimum %.2f — position left open",
-                    signal.market_title[:40], shares, market_min,
-                )
-                return CopyResult(
-                    signal=signal, status="skipped",
-                    reason=f"Position too small to sell: {shares:.4f} shares (market min: {market_min:.2f})",
-                )
+            # No pre-flight share-minimum check here.
+            # min_order_size from the order book applies to limit orders (posting liquidity),
+            # not to market SELL orders (taking liquidity). The website sells small amounts
+            # successfully via market orders — the same mechanism we use. If the API
+            # actually rejects the order, the error is caught in _place_sell_order().
 
         exit_price = round(max(signal.price - self._cfg.slippage, 0.01), 4)
         proceeds   = round(shares * exit_price, 2)
@@ -565,6 +680,59 @@ class CopyTrader:
 
         # Live sell: place the order FIRST — close DB and refund only on success.
         return self._place_sell_order(signal, pos, shares, exit_price, proceeds, refund)
+
+    def close_position(self, pos: dict, reason: str) -> CopyResult | None:
+        """Close an open position due to a take-profit or stop-loss trigger.
+
+        Builds a synthetic SELL signal from the position record and delegates
+        to the same execution path as a normal tracked-wallet sell:
+        - Dry-run / shadow positions → DB closed immediately, no real order.
+        - Live positions → market SELL order placed (FOK).
+
+        Returns None if the position cannot be closed (missing price / shares).
+        """
+        from datetime import datetime, timezone as tz
+        token_id = pos.get("token_id", "")
+        condition_id = pos.get("condition_id", "")
+        shares = float(pos.get("shares") or 0)
+        current_price = pos.get("current_price")
+
+        if not shares or not current_price or not token_id:
+            logger.warning(
+                "close_position: cannot close pos %s — missing shares/price/token_id",
+                pos.get("id"),
+            )
+            return None
+
+        # Build a synthetic SELL signal so we can reuse _copy_sell() unchanged.
+        from .models import Signal
+        synthetic = Signal(
+            wallet_address=pos.get("wallet_address", ""),
+            username=pos.get("username", ""),
+            wallet_rank=int(pos.get("wallet_rank") or 0),
+            condition_id=condition_id,
+            market_title=pos.get("market_title", ""),
+            outcome=pos.get("outcome", ""),
+            side="SELL",
+            size=shares,
+            usdc_size=round(shares * float(current_price), 2),
+            price=float(current_price),
+            detected_at=datetime.now(tz.utc).isoformat(),
+            transaction_hash="",
+            token_id=token_id,
+        )
+
+        logger.info(
+            "[TP/SL] Closing position %d (%s) @ $%.4f — %s",
+            pos.get("id", 0),
+            pos.get("market_title", "")[:40],
+            float(current_price),
+            reason,
+        )
+        result = self._copy_sell(synthetic)
+        # Augment reason so the UI/logs clearly show this was automated
+        result.reason = f"[TP/SL] {reason} | {result.reason}"
+        return result
 
     def get_balance(self) -> float:
         """Return USDC balance (public helper for CLI)."""
@@ -633,18 +801,9 @@ class CopyTrader:
     def _compute_spend(self, signal: Signal, balance: float) -> float:
         mode = self._cfg.sizing_mode
         if mode == "fixed":
-            # Proportional scaling: fixed_usdc is the baseline for reference_trade_usdc.
-            # A larger signal → proportionally more spend; smaller signal → less.
-            ref = self._cfg.reference_trade_usdc
-            if ref > 0 and signal.usdc_size > 0:
-                spend = self._cfg.fixed_usdc * (signal.usdc_size / ref)
-            else:
-                spend = self._cfg.fixed_usdc
-            logger.debug(
-                "Fixed proportional: $%.2f × (%.2f / %.2f) = $%.2f",
-                self._cfg.fixed_usdc, signal.usdc_size, ref, spend,
-            )
-            return round(spend, 2)
+            # Flat fixed amount — always spend exactly fixed_usdc regardless of signal size.
+            logger.debug("Fixed: $%.2f USDC", self._cfg.fixed_usdc)
+            return self._cfg.fixed_usdc
         if mode == "pct_balance":
             return balance * self._cfg.pct_balance
         if mode == "mirror_pct":
@@ -652,35 +811,43 @@ class CopyTrader:
         logger.warning("Unknown sizing_mode '%s', defaulting to fixed", mode)
         return self._cfg.fixed_usdc
 
-    def _place_order(self, signal: Signal, shares: float, price: float, spend: float) -> CopyResult:
+    def _place_order(self, signal: Signal, price: float, spend: float) -> CopyResult:
+        """Place a live market BUY order spending exactly `spend` USDC.
+
+        Uses MarketOrderArgs with FOK (Fill-Or-Kill): the order either fills
+        completely at or below `price` (worst-price slippage limit) or is
+        cancelled immediately. No partial fills, no resting on the order book.
+        """
         try:
-            ClobClient, OrderArgs, OrderType, BUY, _, _, _ = _clob_imports()
+            _, MarketOrderArgs, OrderType, BUY, _, _, _ = _clob_imports()
             client = self._get_client()
 
-            order_args = OrderArgs(
+            order_args = MarketOrderArgs(
                 token_id=signal.token_id,
-                price=price,
-                size=shares,
+                amount=spend,      # USDC to spend (BUY semantics)
                 side=BUY,
+                price=price,       # worst-price limit (slippage protection)
             )
-            signed = client.create_order(order_args)
-            resp = client.post_order(signed, OrderType.GTC)
+            signed = client.create_market_order(order_args)
+            resp = client.post_order(signed, OrderType.FOK)
 
             if resp.get("success") or resp.get("orderID"):
                 order_id = resp.get("orderID", "")
+                # Estimate shares from spend/price for the position record.
+                # takingAmount in the response may be empty for FOK orders.
+                est_shares = round(spend / price, 2)
                 logger.info(
-                    "Order placed: %s — BUY %.2f shares @ $%.4f (≈$%.2f USDC)",
-                    order_id, shares, price, spend,
+                    "Market BUY placed: %s — $%.2f USDC @ worst-price $%.4f (≈%.2f shares)",
+                    order_id, spend, price, est_shares,
                 )
                 self._storage.record_daily_spend(date.today().isoformat(), spend)
-                # Record live trade so polymarket pnl can track it alongside dry-run positions
                 self._storage.append_paper_position({
                     "condition_id":  signal.condition_id,
                     "token_id":      signal.token_id,
                     "market_title":  signal.market_title,
                     "outcome":       signal.outcome,
                     "entry_price":   price,
-                    "shares":        shares,
+                    "shares":        est_shares,
                     "spend_usdc":    spend,
                     "opened_at":     signal.detected_at,
                     "wallet_address": signal.wallet_address,
@@ -692,45 +859,47 @@ class CopyTrader:
                 self._pending_buys.discard(market_key)
                 return CopyResult(
                     signal=signal, status="placed",
-                    reason=f"BUY {shares:.2f} shares @ ${price:.4f} (≈${spend:.2f} USDC)",
+                    reason=f"Market BUY $%.2f USDC @ worst-price ${price:.4f} (≈{est_shares:.2f} shares)" % spend,
                     order_id=order_id,
                     spend_usdc=spend,
                     price=price,
                 )
             else:
                 err = resp.get("errorMsg") or str(resp)
-                logger.error("Order rejected: %s", err)
+                logger.error("Market BUY rejected: %s", err)
                 self._pending_buys.discard(signal.condition_id or signal.token_id)
                 return CopyResult(signal=signal, status="failed", reason=f"API rejected: {err}")
 
         except Exception as exc:
-            logger.error("Order placement exception: %s", exc)
+            logger.error("Market BUY exception: %s", exc)
             self._pending_buys.discard(signal.condition_id or signal.token_id)
             return CopyResult(signal=signal, status="failed", reason=str(exc))
 
     def _place_sell_order(self, signal: Signal, pos: dict, shares: float, price: float, proceeds: float, refund: float) -> CopyResult:
-        """Place a live SELL order on the CLOB.
+        """Place a live market SELL order on the CLOB (FOK).
 
+        For SELL, MarketOrderArgs.amount is shares (not USDC).
+        `price` is the worst-price floor — order is cancelled if market is below it.
         Closes the DB position and refunds daily_spend only on success.
         On failure the position is left open so it can be retried.
         """
         try:
-            ClobClient, OrderArgs, OrderType, _, SELL, _, _ = _clob_imports()
+            _, MarketOrderArgs, OrderType, _, SELL, _, _ = _clob_imports()
             client = self._get_client()
 
-            order_args = OrderArgs(
+            order_args = MarketOrderArgs(
                 token_id=signal.token_id,
-                price=price,
-                size=shares,
+                amount=shares,   # SELL semantics: amount = shares to sell
                 side=SELL,
+                price=price,     # worst-price floor (slippage protection)
             )
-            signed = client.create_order(order_args)
-            resp   = client.post_order(signed, OrderType.GTC)
+            signed = client.create_market_order(order_args)
+            resp   = client.post_order(signed, OrderType.FOK)
 
             if resp.get("success") or resp.get("orderID"):
                 order_id = resp.get("orderID", "")
                 logger.info(
-                    "Sell order placed: %s — SELL %.4f shares @ $%.4f (≈$%.2f USDC)",
+                    "Market SELL placed: %s — %.4f shares @ worst-price $%.4f (≈$%.2f USDC)",
                     order_id, shares, price, proceeds,
                 )
                 # Confirmed — close DB position and restore daily headroom
@@ -744,16 +913,16 @@ class CopyTrader:
                     )
                 return CopyResult(
                     signal=signal, status="placed",
-                    reason=f"SELL {shares:.4f} shares @ ${price:.4f} (≈${proceeds:.2f} USDC)",
+                    reason=f"Market SELL {shares:.4f} shares @ worst-price ${price:.4f} (≈${proceeds:.2f} USDC)",
                     order_id=order_id,
                     spend_usdc=-proceeds,
                     price=price,
                 )
             else:
                 err = resp.get("errorMsg") or str(resp)
-                logger.error("Sell order rejected: %s — position left open for retry", err)
+                logger.error("Market SELL rejected: %s — position left open for retry", err)
                 return CopyResult(signal=signal, status="failed", reason=f"API rejected: {err}")
 
         except Exception as exc:
-            logger.error("Sell order exception: %s — position left open for retry", exc)
+            logger.error("Market SELL exception: %s — position left open for retry", exc)
             return CopyResult(signal=signal, status="failed", reason=str(exc))
