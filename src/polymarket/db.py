@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS paper_positions (
     -- 'lost'   = market resolved, our outcome lost (final price 0.0)
     -- 'closed' = market closed/settled but resolution unclear
     resolution_outcome  TEXT             NOT NULL DEFAULT '',
-    -- label of the winning outcome, e.g. 'Yes', 'No', 'Yokohama F·Marinos'
+    -- label of the winning outcome, e.g. 'Yes', 'No', 'Yokohama F-Marinos'
     market_closed       BOOLEAN          NOT NULL DEFAULT FALSE,
     topup_count         INTEGER          NOT NULL DEFAULT 0
 );
