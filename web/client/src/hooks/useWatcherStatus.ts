@@ -2,9 +2,14 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { WatcherStatus } from "../lib/types";
 import { apiUrl } from "../lib/api";
 
+async function jsonOrThrow(r: Response) {
+  const body = await r.json().catch(() => ({ detail: `HTTP ${r.status}` }));
+  if (!r.ok) throw new Error(body?.detail ?? `HTTP ${r.status}`);
+  return body;
+}
+
 async function fetchStatus(): Promise<WatcherStatus> {
-  const r = await fetch(apiUrl("/api/watcher/status"));
-  const data = await r.json();
+  const data = await jsonOrThrow(await fetch(apiUrl("/api/watcher/status")));
   return {
     status: data.status ?? "stopped",
     mode: data.mode ?? "",
@@ -32,12 +37,14 @@ export function useWatcherStatus() {
 export function useStartWatcher() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (skipRecalculation: boolean = true) =>
-      fetch(apiUrl("/api/watcher/start"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ skip_recalculation: skipRecalculation }),
-      }).then((r) => r.json()),
+    mutationFn: async (skipRecalculation: boolean = true) =>
+      jsonOrThrow(
+        await fetch(apiUrl("/api/watcher/start"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ skip_recalculation: skipRecalculation }),
+        })
+      ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["watcher-status"] }),
   });
 }
@@ -45,7 +52,8 @@ export function useStartWatcher() {
 export function useStopWatcher() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => fetch(apiUrl("/api/watcher/stop"), { method: "POST" }).then((r) => r.json()),
+    mutationFn: async () =>
+      jsonOrThrow(await fetch(apiUrl("/api/watcher/stop"), { method: "POST" })),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["watcher-status"] }),
   });
 }
