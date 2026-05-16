@@ -34,12 +34,20 @@ if not _BASE_PATH.endswith("/"):
 
 
 def _inject_base_path(html: str) -> str:
-    """Inject <base href> and window.__BASE_PATH__ into the index.html <head>."""
-    injection = (
-        f'<base href="{_BASE_PATH}">'
-        f'<script>window.__BASE_PATH__="{_BASE_PATH}";</script>'
-    )
-    # Insert right after <head> (Vite always emits one)
+    """Optionally inject window.__BASE_PATH__ for explicit base-path override.
+
+    <base href> is intentionally NOT set here.  With Vite's base:"./", all
+    asset references are relative (./assets/...) and the browser resolves them
+    against the actual document URL, which already includes any sub-path prefix
+    (e.g. /tracker/) whether accessed via Tailscale or direct port-forward.
+
+    window.__BASE_PATH__ is only injected when BASE_PATH is set to a non-root
+    value; otherwise api.ts auto-detects the base from window.location.pathname,
+    which equals the mount point for this SPA (no client-side routing).
+    """
+    if _BASE_PATH == "/":
+        return html  # auto-detection handles it; no injection needed
+    injection = f'<script>window.__BASE_PATH__="{_BASE_PATH}";</script>'
     return html.replace("<head>", f"<head>{injection}", 1)
 
 

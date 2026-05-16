@@ -1,16 +1,31 @@
 /**
  * Base-path aware API helpers.
  *
- * The server injects window.__BASE_PATH__ into index.html at serve time
- * from the BASE_PATH environment variable (e.g. "/tracker/" or "/btc/").
- * This lets the same build run at any sub-path without being recompiled.
+ * Works automatically for two access methods without any build-time config:
  *
- * Local dev (BASE_PATH "/"): apiUrl("/api/foo") → "/api/foo"
- * Tailscale /tracker  (BASE_PATH "/tracker/"): apiUrl("/api/foo") → "/tracker/api/foo"
+ *   Direct port-forward  http://localhost:8080/
+ *     pathname = "/"  →  _base = ""  →  apiUrl("/api/foo") = "/api/foo"
+ *
+ *   Tailscale sub-path   https://host/tracker/
+ *     pathname = "/tracker/"  →  _base = "/tracker"
+ *     →  apiUrl("/api/foo") = "/tracker/api/foo"
+ *     →  Tailscale strips /tracker before forwarding to the container
+ *
+ * Since this SPA has no client-side routing, window.location.pathname always
+ * equals the mount point, making pathname-based detection reliable.
+ *
+ * window.__BASE_PATH__ (injected by the server when BASE_PATH env var is set
+ * to a non-root value) takes priority and can override auto-detection.
  */
-
-// Strip trailing slash so we can cleanly concatenate with paths that start with /
-const _base = ((window as any).__BASE_PATH__ || "/").replace(/\/$/, "");
+const _base = (() => {
+  const injected = (window as any).__BASE_PATH__ as string | undefined;
+  if (injected && injected !== "/") {
+    return injected.replace(/\/+$/, "");
+  }
+  // Auto-detect from the current URL (no client-side routing, so pathname = mount point)
+  const p = window.location.pathname;
+  return p.endsWith("/") ? p.slice(0, -1) : p.replace(/\/[^/]*$/, "");
+})();
 
 /** Prepend the deployment base path to an absolute-rooted API path. */
 export function apiUrl(path: string): string {
