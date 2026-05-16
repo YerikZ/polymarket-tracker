@@ -20,7 +20,15 @@
 const _base = (() => {
   const injected = (window as any).__BASE_PATH__ as string | undefined;
   if (injected && injected !== "/") {
-    return injected.replace(/\/+$/, "");
+    const base = injected.replace(/\/+$/, ""); // e.g. "/tracker"
+    const p = window.location.pathname;
+    // Only use the injected base when the current URL is actually served under
+    // that path (Tailscale sub-path access).  When port-forwarding directly
+    // (localhost:PORT → "/"), the injected value is irrelevant and we fall
+    // through to auto-detection so no stale prefix leaks into API/WS URLs.
+    if (p === base || p.startsWith(base + "/")) {
+      return base;
+    }
   }
   // Auto-detect from the current URL (no client-side routing, so pathname = mount point)
   const p = window.location.pathname;
