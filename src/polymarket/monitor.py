@@ -68,6 +68,8 @@ class SignalMonitor:
         poll_count = 0
         while not self._stop_event.is_set():
             poll_count += 1
+            poll_new_txs = 0
+            poll_signals = 0
             try:
                 # Force refresh only on the first poll — subsequent polls use TTL normally
                 wallets = self._scanner.fetch_top_wallets(force_refresh=force_refresh and poll_count == 1)
@@ -75,12 +77,19 @@ class SignalMonitor:
                 for wallet in wallets:
                     if self._stop_event.is_set():
                         break
-                    signals = self._poll_wallet(wallet)
+                    n_new, signals = self._poll_wallet(wallet)
+                    poll_new_txs += n_new
+                    poll_signals += len(signals)
                     for sig in signals:
                         sig.alert_id = self._storage.append_alert(sig)
                         on_signal(sig)
             except Exception as exc:
                 logger.error("Error during poll: %s", exc)
+
+            logger.info(
+                "Poll #%d complete — %d new tx(s) across all wallets, %d signal(s) emitted",
+                poll_count, poll_new_txs, poll_signals,
+            )
 
             if self._stop_event.is_set():
                 break
@@ -90,21 +99,46 @@ class SignalMonitor:
 
         logger.info("Monitor stopped.")
 
-    def _poll_wallet(self, wallet: Wallet) -> list[Signal]:
+    def _poll_wallet(self, wallet: Wallet) -> tuple[int, list[Signal]]:
+        """Poll one wallet and return (n_truly_new_txs, signals)."""
         try:
             raw_activity = self._client.activity(wallet.address, limit=50)
         except Exception as exc:
             logger.warning("Activity fetch failed for %s: %s", wallet.username, exc)
-            return []
+            return 0, []
+
+        raw = raw_activity or []
+        n_returned = len(raw)
+
+        # Warn if the API returned trades but none carry a transactionHash —
+        # this would indicate a silent API schema change that breaks deduplication.
+        if n_returned > 0 and not any(t.get("transactionHash") for t in raw):
+            logger.warning(
+                "%s: %d trade(s) returned but NONE have 'transactionHash' — "
+                "API field may have been renamed; all trades will be skipped.",
+                wallet.username, n_returned,
+            )
 
         snapshot_hashes = self._storage.get_snapshot(wallet.address)
-        signals = self._diff_activity(wallet, raw_activity or [], snapshot_hashes)
+        new_hashes = {t.get("transactionHash", "") for t in raw if t.get("transactionHash")}
+        truly_new = new_hashes - snapshot_hashes
+
+        signals = self._diff_activity(wallet, raw, snapshot_hashes)
 
         # Update snapshot with all seen hashes
-        new_hashes = {t.get("transactionHash", "") for t in (raw_activity or []) if t.get("transactionHash")}
         self._storage.save_snapshot(wallet.address, snapshot_hashes | new_hashes)
 
-        return signals
+        logger.debug(
+            "%s: %d returned, %d unseen tx(s), %d signal(s)",
+            wallet.username, n_returned, len(truly_new), len(signals),
+        )
+        if truly_new and not signals:
+            logger.debug(
+                "%s: %d new tx(s) all filtered (age/size/side)",
+                wallet.username, len(truly_new),
+            )
+
+        return len(truly_new), signals
 
     def _diff_activity(
         self,
@@ -117,25 +151,49 @@ class SignalMonitor:
 
         cutoff_ts = time.time() - self._max_signal_age
 
+        # Log the raw field names of the first unseen trade to catch API schema changes
+        _logged_fields = False
+
         for trade in current:
             tx_hash = trade.get("transactionHash", "")
             if not tx_hash or tx_hash in snapshot_hashes:
                 continue
+
+            # First unseen trade — log its keys at DEBUG so schema changes are visible
+            if not _logged_fields:
+                _logged_fields = True
+                logger.debug(
+                    "%s: first unseen trade keys: %s",
+                    wallet.username, list(trade.keys()),
+                )
 
             # Skip stale trades — prevents historical activity from flooding as signals
             ts = int(trade.get("timestamp") or 0)
             if ts > 1e12:
                 ts = ts // 1000  # milliseconds → seconds
             if ts and ts < cutoff_ts:
+                logger.debug(
+                    "%s: skipping stale trade %s… (ts=%d, cutoff=%d, age=%ds)",
+                    wallet.username, tx_hash[:12], ts, int(cutoff_ts),
+                    int(time.time() - ts) if ts else -1,
+                )
                 continue
 
             side = trade.get("side", "").upper()
             usdc_size = float(trade.get("usdcSize") or 0)
 
             if side not in ("BUY", "SELL"):
+                logger.debug(
+                    "%s: skipping trade %s… — unrecognised side=%r",
+                    wallet.username, tx_hash[:12], side,
+                )
                 continue
             # Apply min-size filter only to buys; sells always propagate
             if side == "BUY" and usdc_size < self._min_size:
+                logger.debug(
+                    "%s: skipping small BUY %s… — $%.2f < $%.2f min",
+                    wallet.username, tx_hash[:12], usdc_size, self._min_size,
+                )
                 continue
 
             condition_id = trade.get("conditionId", "")
