@@ -46,10 +46,20 @@ class SignalMonitor:
         # condition_id → resolved title (avoid repeated GAMMA lookups within a session)
         self._title_cache: dict[str, str] = {}
         self._stop_event = threading.Event()
+        # Set when run() actually returns — lets stop_watcher wait for the OS thread
+        # to fully exit before allowing a new watcher to start (prevents ghost monitors).
+        self._done_event = threading.Event()
 
     def stop(self) -> None:
         """Signal the run loop to exit at the next sleep boundary."""
         self._stop_event.set()
+
+    def join(self, timeout: float = 30.0) -> bool:
+        """Block until run() has returned, or until timeout seconds elapse.
+
+        Returns True if the thread exited cleanly, False if it timed out.
+        """
+        return self._done_event.wait(timeout=timeout)
 
     def run(self, on_signal: Callable[[Signal], None], force_refresh: bool = False) -> None:
         """Blocking loop — call stop() from another thread to exit cleanly.
@@ -59,6 +69,7 @@ class SignalMonitor:
                            first fetch (useful after changing top_n in config).
         """
         self._stop_event.clear()
+        self._done_event.clear()
         logger.info(
             "Starting monitor: scanning up to %d wallets, poll every %ds, min size $%.0f",
             self._scanner._top_n,
@@ -98,6 +109,7 @@ class SignalMonitor:
             self._stop_event.wait(timeout=self._interval)
 
         logger.info("Monitor stopped.")
+        self._done_event.set()  # Unblock any join() callers
 
     def _poll_wallet(self, wallet: Wallet) -> tuple[int, list[Signal]]:
         """Poll one wallet and return (n_truly_new_txs, signals)."""

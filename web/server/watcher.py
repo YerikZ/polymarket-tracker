@@ -99,9 +99,10 @@ async def stop_watcher(state: WatcherState) -> None:
     # Without this, the OS thread running monitor.run() keeps looping forever even
     # after the asyncio task is cancelled, leaking threads and eventually exhausting
     # the thread pool (causing asyncio.to_thread calls to hang indefinitely).
-    if state._monitor is not None:
+    old_monitor = state._monitor
+    if old_monitor is not None:
         try:
-            state._monitor.stop()
+            old_monitor.stop()
         except Exception:
             pass
 
@@ -110,6 +111,29 @@ async def stop_watcher(state: WatcherState) -> None:
         await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
     except (asyncio.CancelledError, asyncio.TimeoutError):
         pass
+
+    # Wait for the underlying OS thread to actually finish.
+    #
+    # asyncio.to_thread() cannot forcefully terminate an OS thread — cancelling
+    # the asyncio Task only makes the awaitable return early; the thread keeps
+    # running until it notices _stop_event.  stop() set the event above, so the
+    # thread will exit after its current wallet-poll completes (~1-3 seconds).
+    #
+    # Without this wait, a new watcher can start before the old thread has
+    # written its final snapshot batch.  Both threads then race to update the
+    # snapshot table, and the new monitor sees all hashes as "already seen",
+    # producing zero signals ("ghost monitor" / "no trades" symptom).
+    if old_monitor is not None:
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(old_monitor.join, 30.0),
+                timeout=32.0,
+            )
+            logger.debug("Old monitor thread joined cleanly.")
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Old monitor thread did not finish within 30s — starting new watcher anyway."
+            )
 
     async with state._lock:
         state.task = None
